@@ -39,6 +39,10 @@ result = simplify.simplify(pd_code)
 print(result["final_pd_code"])
 ```
 
+Returned `final_pd_code` strings are normalized so the smallest edge label is
+`1`. This is applied only at the final JSON boundary; the C++ backend keeps its
+internal numbering unchanged while simplifying.
+
 The default `max_paths=-1` uses deterministic heuristic green-path sampling in
 the C++ backend. Use `ban_heuristic=True` to request exhaustive green-path
 enumeration for a manageable input. Use `reduction_round=K` to cap applied

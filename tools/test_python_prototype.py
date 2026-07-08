@@ -24,6 +24,24 @@ def main() -> int:
     analysis = simplify.analyze_components(trefoil)
     require(analysis.total_components == 1, "trefoil should have one component")
 
+    zero_based_trefoil = simplify.parse_pd_code(
+        "PD[X[0,4,1,3],X[2,0,3,5],X[4,2,5,1]]"
+    )
+    zero_based_result = simplify.reduce_pd_code(
+        zero_based_trefoil,
+        reduction_round=0,
+    )
+    require(
+        zero_based_result.to_json()["final_pd_code"]
+        == "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]",
+        "final Python JSON PD code should be one-based",
+    )
+    require(
+        simplify.format_final_pd_code(zero_based_result.code)
+        == "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]",
+        "final Python text formatter should be one-based",
+    )
+
     after = simplify.analyze_components_after_removing_crossings(trefoil, [0, 1, 2])
     require(after.components_with_crossings == 0, "removed trefoil should have no crossing-bearing components")
     require(after.crossingless_components == 1, "removed trefoil should preserve one crossingless component")

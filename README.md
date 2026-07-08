@@ -56,6 +56,9 @@ result = simplify.simplify("PD[]")
 print(result["final_pd_code"])
 ```
 
+All final `final_pd_code` strings are normalized so the smallest edge label is
+`1`; the simplification algorithms keep their internal numbering unchanged.
+
 Run C++/Python differential tests:
 
 ```sh

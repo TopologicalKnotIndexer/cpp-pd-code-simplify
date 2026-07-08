@@ -17,6 +17,7 @@ import cpp_pd_code_simplify_interface.main as interface_main  # noqa: E402
 
 
 TREFOIL = "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]"
+ZERO_BASED_TREFOIL = "PD[X[0,4,1,3],X[2,0,3,5],X[4,2,5,1]]"
 
 
 def preferred_cxx() -> str | None:
@@ -71,6 +72,9 @@ def main() -> int:
     assert trefoil["final_crossings"] == 3
     assert trefoil["final_components"]["total_components"] == 1
     assert trefoil["last_path_search_mode"] == "bruteforce"
+
+    zero_based_trefoil = interface.simplify(ZERO_BASED_TREFOIL, reduction_round=0)
+    assert zero_based_trefoil["final_pd_code"] == TREFOIL
 
     unknot = interface.simplify("PD[]")
     assert unknot["input_components"]["crossingless_components"] == 1

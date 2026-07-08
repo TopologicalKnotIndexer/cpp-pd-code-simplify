@@ -177,7 +177,7 @@ class ReductionResult:
         if after_removal_components is not None:
             data["after_removal_components"] = after_removal_components.to_json()
         data.update({
-            "final_pd_code": format_pd_code(self.code),
+            "final_pd_code": format_final_pd_code(self.code),
             "final_crossings": len(self.code),
             "final_components": (
                 final_components.to_json()
@@ -247,6 +247,20 @@ def parse_pd_code(text: str) -> PDCode:
 def format_pd_code(code: PDCode) -> str:
     parts = ["X[{},{},{},{}]".format(*crossing) for crossing in code]
     return "PD[" + ",".join(parts) + "]"
+
+
+def format_final_pd_code(code: PDCode) -> str:
+    if not code:
+        return format_pd_code(code)
+    minimum_label = min(label for crossing in code for label in crossing)
+    if minimum_label == 1:
+        return format_pd_code(code)
+    offset = 1 - minimum_label
+    shifted = [
+        tuple(label + offset for label in crossing)
+        for crossing in code
+    ]
+    return format_pd_code(shifted)
 
 
 def compact_text(text: str) -> str:
@@ -2114,7 +2128,7 @@ def print_text_result(
             f"{after_removal_components.crossingless_components}"
         )
         print(f"after_removal_total_components: {after_removal_components.total_components}")
-    print(f"final_pd_code: {format_pd_code(result.code)}")
+    print(f"final_pd_code: {format_final_pd_code(result.code)}")
     print(f"final_crossings: {len(result.code)}")
     print(f"final_components_with_crossings: {final_components.components_with_crossings}")
     print(f"final_crossingless_components: {final_components.crossingless_components}")

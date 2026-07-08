@@ -92,7 +92,7 @@ std::string result_to_json(
         append_component_counts(out, *after_removal_components);
         out << "},";
     }
-    out << "\"final_pd_code\":\"" << json_escape(pdcode_simplify::format_pd_code(result.code))
+    out << "\"final_pd_code\":\"" << json_escape(pdcode_simplify::format_final_pd_code(result.code))
         << "\",";
     out << "\"final_crossings\":" << result.code.size() << ",";
     out << "\"final_components\":{";

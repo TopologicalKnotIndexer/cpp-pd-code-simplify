@@ -1868,6 +1868,35 @@ std::string format_pd_code(const PDCode& code) {
     return out.str();
 }
 
+std::string format_final_pd_code(const PDCode& code) {
+    if (code.empty()) {
+        return format_pd_code(code);
+    }
+
+    bool has_label = false;
+    int minimum_label = 0;
+    for (const Crossing& crossing : code) {
+        for (int label : crossing) {
+            if (!has_label || label < minimum_label) {
+                minimum_label = label;
+                has_label = true;
+            }
+        }
+    }
+    if (!has_label || minimum_label == 1) {
+        return format_pd_code(code);
+    }
+
+    PDCode shifted = code;
+    const int offset = 1 - minimum_label;
+    for (Crossing& crossing : shifted) {
+        for (int& label : crossing) {
+            label += offset;
+        }
+    }
+    return format_pd_code(shifted);
+}
+
 std::string format_endpoint(const Endpoint& endpoint) {
     std::ostringstream out;
     out << '(' << endpoint.crossing << ", " << endpoint.strand << ')';

@@ -54,6 +54,10 @@ Run one literal PD code:
 pd_simplify --pd-code "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]"
 ```
 
+The final `final_pd_code` string printed by text and JSON modes is normalized
+so the smallest edge label is `1`. This is an output formatting step; the
+simplification algorithm keeps its internal numbering unchanged.
+
 Read one input file:
 
 ```sh
@@ -143,7 +147,7 @@ auto code = pdcode_simplify::parse_pd_code("PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]
 auto components = pdcode_simplify::analyze_components(code);
 auto prepared = pdcode_simplify::simplify_pd_code(code);
 auto result = pdcode_simplify::reduce_pd_code(code);
-std::cout << pdcode_simplify::format_pd_code(result.code) << "\n";
+std::cout << pdcode_simplify::format_final_pd_code(result.code) << "\n";
 ```
 
 The library also includes deterministic crossing-increasing helpers. Set

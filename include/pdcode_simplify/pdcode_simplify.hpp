@@ -125,6 +125,7 @@ struct ReductionResult {
 
 PDCODE_SIMPLIFY_API PDCode parse_pd_code(const std::string& text);
 PDCODE_SIMPLIFY_API std::string format_pd_code(const PDCode& code);
+PDCODE_SIMPLIFY_API std::string format_final_pd_code(const PDCode& code);
 PDCODE_SIMPLIFY_API std::string format_endpoint(const Endpoint& endpoint);
 PDCODE_SIMPLIFY_API std::string format_direction(Direction direction);
 

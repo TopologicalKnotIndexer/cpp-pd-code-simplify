@@ -338,7 +338,7 @@ void print_text_result(
     if (after_removal_components != nullptr) {
         print_component_counts(*after_removal_components, "after_removal");
     }
-    std::cout << "final_pd_code: " << pdcode_simplify::format_pd_code(result.code) << '\n';
+    std::cout << "final_pd_code: " << pdcode_simplify::format_final_pd_code(result.code) << '\n';
     std::cout << "final_crossings: " << result.code.size() << '\n';
     print_component_counts(final_components, "final");
     std::cout << "mid_simplification_rounds: " << result.mid_simplification_rounds << '\n';
@@ -410,7 +410,7 @@ void print_json_result(
         std::cout << "},\n";
     }
     std::cout << "  \"final_pd_code\": \""
-              << json_escape(pdcode_simplify::format_pd_code(result.code)) << "\",\n";
+              << json_escape(pdcode_simplify::format_final_pd_code(result.code)) << "\",\n";
     std::cout << "  \"final_crossings\": " << result.code.size() << ",\n";
     std::cout << "  \"final_components\": {";
     print_json_component_counts(final_components);
