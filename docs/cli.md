@@ -4,7 +4,32 @@ The `pd_simplify` executable follows the same input style as `cppkh`: pass a
 literal `PD[...]` string, a file, or every `.txt` and `.pd` file in a
 directory.
 
-## Build Scripts
+## Build
+
+Build and run the unit tests:
+
+```sh
+python tools/package.py test
+```
+
+Build the executable and shared library:
+
+```sh
+python tools/package.py build
+```
+
+Useful build variables:
+
+```sh
+python tools/package.py build --config debug
+python tools/package.py build --cxx clang++
+python tools/package.py build --build-dir out
+```
+
+The executable is written to `build/bin/pd_simplify` on Linux and macOS, and
+to `build/bin/pd_simplify.exe` on Windows.
+
+The helper scripts are thin wrappers around `python tools/package.py test`.
 
 Windows:
 
@@ -18,13 +43,8 @@ Linux and macOS:
 ./scripts/build.sh
 ```
 
-Manual CMake commands:
-
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
-ctest --test-dir build --build-config Release --output-on-failure
-```
+Packaging, including dynamic-library output, is documented in
+[Packaging](packaging.md).
 
 ## Inputs
 

@@ -29,8 +29,8 @@ SummaryRow = Dict[str, object]
 
 def default_cpp_exe() -> str:
     candidates = [
-        ROOT / "build" / "Release" / "pd_simplify.exe",
-        ROOT / "build" / "Release" / "pd_simplify",
+        ROOT / "build" / "bin" / "pd_simplify.exe",
+        ROOT / "build" / "bin" / "pd_simplify",
         ROOT / "build" / "pd_simplify.exe",
         ROOT / "build" / "pd_simplify",
         ROOT / "build-manual" / "pd_simplify.exe",

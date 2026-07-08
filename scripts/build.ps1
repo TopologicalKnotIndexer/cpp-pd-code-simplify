@@ -1,10 +1,11 @@
 param(
     [string]$BuildDir = "build",
-    [string]$Config = "Release"
+    [string]$Config = "release"
 )
 
 $ErrorActionPreference = "Stop"
 
-cmake -S . -B $BuildDir -DCMAKE_BUILD_TYPE=$Config
-cmake --build $BuildDir --config $Config
-ctest --test-dir $BuildDir --build-config $Config --output-on-failure
+$Python = if ($env:PYTHON) { $env:PYTHON } else { "python" }
+$NormalizedConfig = $Config.ToLowerInvariant()
+
+& $Python tools\package.py test --build-dir $BuildDir --config $NormalizedConfig

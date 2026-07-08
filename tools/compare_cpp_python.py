@@ -39,6 +39,8 @@ BUILTIN_CASES: Dict[str, str] = {
 
 def default_cpp_exe() -> str:
     candidates = [
+        ROOT / "build" / "bin" / "pd_simplify.exe",
+        ROOT / "build" / "bin" / "pd_simplify",
         ROOT / "build-manual" / "pd_simplify.exe",
         ROOT / "build-manual" / "pd_simplify",
         ROOT / "build" / "pd_simplify.exe",

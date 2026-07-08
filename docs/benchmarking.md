@@ -41,6 +41,10 @@ python -m venv .venv
 Build the C++ executable, then run:
 
 ```sh
+python tools/package.py build
+```
+
+```sh
 .\.venv\Scripts\python tools\benchmark_cpp_python.py ^
   --repeat 3 ^
   --plot docs\assets\benchmark_cpp_python.png ^

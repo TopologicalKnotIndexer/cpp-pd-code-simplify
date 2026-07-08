@@ -9,15 +9,22 @@ Python prototype for differential testing.
 Build and test:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
-ctest --test-dir build --build-config Release --output-on-failure
+python tools/package.py test
 ```
 
 Run one PD code:
 
 ```sh
-pd_simplify --pd-code "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]"
+./build/bin/pd_simplify --pd-code "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]"
+```
+
+On Windows, use `.\build\bin\pd_simplify.exe` for the executable path.
+
+Create a redistributable package with the CLI, shared library, headers, and
+documentation:
+
+```sh
+python tools/package.py package --run-tests
 ```
 
 Run the Python prototype:
@@ -49,6 +56,7 @@ This local run uses the deterministic benchmark set documented in
 - [Command-line interface](docs/cli.md)
 - [Python prototype and comparison tools](docs/python.md)
 - [Algorithm and correctness](docs/algorithm-and-correctness.md)
+- [Packaging](docs/packaging.md)
 - [Benchmarking](docs/benchmarking.md)
 - [Python and C++ comparison results](docs/python-cpp-comparison.md)
 

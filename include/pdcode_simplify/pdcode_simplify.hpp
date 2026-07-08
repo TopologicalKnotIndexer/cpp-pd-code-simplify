@@ -6,6 +6,18 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32) && (defined(PDCODE_SIMPLIFY_SHARED) || defined(PDCODE_SIMPLIFY_BUILD_SHARED))
+#if defined(PDCODE_SIMPLIFY_BUILD_SHARED)
+#define PDCODE_SIMPLIFY_API __declspec(dllexport)
+#else
+#define PDCODE_SIMPLIFY_API __declspec(dllimport)
+#endif
+#elif defined(PDCODE_SIMPLIFY_BUILD_SHARED) && defined(__GNUC__)
+#define PDCODE_SIMPLIFY_API __attribute__((visibility("default")))
+#else
+#define PDCODE_SIMPLIFY_API
+#endif
+
 namespace pdcode_simplify {
 
 struct Endpoint {
@@ -86,37 +98,37 @@ struct SimplificationResult {
     std::size_t tested_green_paths = 0;
 };
 
-PDCode parse_pd_code(const std::string& text);
-std::string format_pd_code(const PDCode& code);
-std::string format_endpoint(const Endpoint& endpoint);
-std::string format_direction(Direction direction);
+PDCODE_SIMPLIFY_API PDCode parse_pd_code(const std::string& text);
+PDCODE_SIMPLIFY_API std::string format_pd_code(const PDCode& code);
+PDCODE_SIMPLIFY_API std::string format_endpoint(const Endpoint& endpoint);
+PDCODE_SIMPLIFY_API std::string format_direction(Direction direction);
 
-ComponentAnalysis analyze_components(
+PDCODE_SIMPLIFY_API ComponentAnalysis analyze_components(
     const PDCode& code,
     std::size_t known_crossingless_components = 0);
 
-ComponentAnalysis analyze_components_after_removing_crossings(
-    const PDCode& code,
-    const std::vector<int>& removed_crossings,
-    std::size_t known_crossingless_components = 0);
-
-std::size_t count_crossingless_components_after_removing_crossings(
+PDCODE_SIMPLIFY_API ComponentAnalysis analyze_components_after_removing_crossings(
     const PDCode& code,
     const std::vector<int>& removed_crossings,
     std::size_t known_crossingless_components = 0);
 
-RandomInflationResult randomly_increase_crossings(
+PDCODE_SIMPLIFY_API std::size_t count_crossingless_components_after_removing_crossings(
+    const PDCode& code,
+    const std::vector<int>& removed_crossings,
+    std::size_t known_crossingless_components = 0);
+
+PDCODE_SIMPLIFY_API RandomInflationResult randomly_increase_crossings(
     const PDCode& code,
     const RandomInflationOptions& options = RandomInflationOptions{});
 
-ReidemeisterSimplificationResult simplify_reidemeister_i_ii(
+PDCODE_SIMPLIFY_API ReidemeisterSimplificationResult simplify_reidemeister_i_ii(
     const PDCode& code,
     std::size_t known_crossingless_components = 0);
 
-SimplificationResult find_simplification(
+PDCODE_SIMPLIFY_API SimplificationResult find_simplification(
     const PDCode& code,
     const SimplifierOptions& options = SimplifierOptions{});
 
-std::ostream& operator<<(std::ostream& out, const Endpoint& endpoint);
+PDCODE_SIMPLIFY_API std::ostream& operator<<(std::ostream& out, const Endpoint& endpoint);
 
 }  // namespace pdcode_simplify
