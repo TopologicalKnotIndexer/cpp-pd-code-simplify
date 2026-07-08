@@ -41,7 +41,17 @@ python your_script.py
 ```
 
 On Windows, the compiler target must match the Python process architecture.
-For example, 64-bit Python needs a 64-bit MinGW or Clang toolchain.
+For example, 64-bit Python needs a 64-bit MinGW or Clang toolchain. After
+compilation, the interface inspects the generated DLL with `objdump -p` or
+`dumpbin /DEPENDENTS` when available and copies MinGW runtime DLLs into the
+same cache directory as the generated DLL.
+
+On Linux, the generated shared object is built with `$ORIGIN` rpath and the
+interface can use `ldd` to diagnose missing dependencies. On macOS, the dynamic
+library is built with `@loader_path` rpath and the interface can use `otool -L`
+for dependency diagnostics. When loading still fails, the Python exception
+includes platform-specific hints for `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, or
+rebuilding the cache.
 
 ## Use
 

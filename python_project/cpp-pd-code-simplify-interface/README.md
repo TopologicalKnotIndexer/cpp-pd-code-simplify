@@ -14,6 +14,13 @@ use, the package compiles a cached local dynamic library through
 `cpp-simple-interface`; later calls reuse that library through `ctypes`. A C++14
 compiler compatible with `g++` must be available at runtime.
 
+Runtime dependencies are handled per platform. On Windows, the interface uses
+`objdump -p` or `dumpbin /DEPENDENTS` when available, then caches MinGW runtime
+DLLs such as `libstdc++-6.dll`, `libgcc_s_*.dll`, and `libwinpthread-1.dll`
+next to the generated DLL. On Linux it adds `$ORIGIN` rpath and can inspect
+`ldd`; on macOS it adds `@loader_path` rpath and can inspect `otool -L`. Load
+failures are wrapped with platform-specific dependency hints.
+
 The core C++ source and header are not stored as permanent generated copies in
 this subproject. The custom Poetry build backend syncs them from the repository
 root during `poetry build`, embeds them in the wheel and sdist, then removes the

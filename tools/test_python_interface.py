@@ -13,6 +13,7 @@ INTERFACE_ROOT = ROOT / "python_project" / "cpp-pd-code-simplify-interface"
 sys.path.insert(0, str(INTERFACE_ROOT))
 
 import cpp_pd_code_simplify_interface as interface  # noqa: E402
+import cpp_pd_code_simplify_interface.main as interface_main  # noqa: E402
 
 
 TREFOIL = "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]"
@@ -52,6 +53,17 @@ def main() -> int:
 
     library = interface.compile_simplifier(force=True, cxx=preferred_cxx())
     assert library.exists(), library
+    if os.name == "nt":
+        imported = (
+            interface_main._objdump_dependency_names(library)
+            or interface_main._dumpbin_dependency_names(library)
+        )
+        runtime_imports = [
+            name for name in imported
+            if interface_main._runtime_basename_is_cacheable(name)
+        ]
+        for name in runtime_imports:
+            assert interface_main._find_dependency_file(name, [library.parent]) is not None, name
 
     trefoil = interface.simplify(TREFOIL)
     assert trefoil["simplification_found"] is False

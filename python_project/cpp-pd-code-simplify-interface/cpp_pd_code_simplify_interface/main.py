@@ -11,7 +11,9 @@ import pathlib
 import platform
 import re
 import shlex
+import shutil
 import struct
+import subprocess
 import sys
 from importlib import resources
 from typing import Any, Optional, Sequence, Union
@@ -229,12 +231,20 @@ def _library_suffix() -> str:
 
 def _default_compile_flags(include_dir: pathlib.Path, library_path: pathlib.Path) -> list[str]:
     flags = ["-std=c++14", "-O3", "-DNDEBUG", "-I" + str(include_dir)]
-    if platform.system() != "Windows":
+    system = platform.system()
+    if system != "Windows":
         flags.append("-fPIC")
-    if platform.system() == "Darwin":
-        flags.extend(["-dynamiclib", "-install_name", "@rpath/" + library_path.name])
+    if system == "Darwin":
+        flags.extend([
+            "-dynamiclib",
+            "-install_name",
+            "@rpath/" + library_path.name,
+            "-Wl,-rpath,@loader_path",
+        ])
     else:
         flags.append("-shared")
+        if system == "Linux":
+            flags.append("-Wl,-rpath,$ORIGIN")
     native = os.environ.get("CPP_PD_CODE_SIMPLIFY_INTERFACE_NATIVE", "1").strip().lower()
     if native not in ("0", "false", "no", "off"):
         flags.append("-march=native")
@@ -249,6 +259,7 @@ def _cache_key(source_bytes: bytes, flags: Sequence[str]) -> str:
     digest.update(source_bytes)
     digest.update("\0".join(flags).encode("utf-8"))
     digest.update(cpp_simple_interface.get_gpp_filepath().encode("utf-8"))
+    digest.update(_runtime_fingerprint())
     digest.update(platform.platform().encode("utf-8"))
     return digest.hexdigest()[:20]
 
@@ -274,7 +285,335 @@ def _compiler_runtime_path_entries() -> list[pathlib.Path]:
         path = pathlib.Path(candidate)
         if path.exists() and path.is_file() and path.parent not in paths:
             paths.append(path.parent)
+            continue
+        resolved = shutil.which(candidate)
+        if resolved:
+            resolved_path = pathlib.Path(resolved)
+            if resolved_path.exists() and resolved_path.parent not in paths:
+                paths.append(resolved_path.parent)
     return paths
+
+
+def _path_entries() -> list[pathlib.Path]:
+    paths: list[pathlib.Path] = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        path = pathlib.Path(entry)
+        if path.exists() and path.is_dir() and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _tool_path(names: Sequence[str], extra_dirs: Sequence[pathlib.Path] = ()) -> Optional[str]:
+    for directory in extra_dirs:
+        for name in names:
+            candidate = directory / name
+            if candidate.exists() and candidate.is_file():
+                return str(candidate)
+    for name in names:
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+    return None
+
+
+def _run_dependency_tool(command: Sequence[str]) -> str:
+    try:
+        result = subprocess.run(
+            list(command),
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return ""
+    if result.returncode != 0 and not result.stdout:
+        return ""
+    return result.stdout
+
+
+def _objdump_dependency_names(path: pathlib.Path) -> list[str]:
+    tool = _tool_path(["objdump.exe", "objdump"], _compiler_runtime_path_entries())
+    if not tool:
+        return []
+    output = _run_dependency_tool([tool, "-p", str(path)])
+    names: list[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("DLL Name:"):
+            names.append(stripped.split(":", 1)[1].strip())
+        elif stripped.startswith("NEEDED"):
+            parts = stripped.split()
+            if len(parts) >= 2:
+                names.append(parts[-1])
+    return names
+
+
+def _dumpbin_dependency_names(path: pathlib.Path) -> list[str]:
+    tool = _tool_path(["dumpbin.exe", "dumpbin"])
+    if not tool:
+        return []
+    output = _run_dependency_tool([tool, "/DEPENDENTS", str(path)])
+    names: list[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.lower().endswith(".dll"):
+            names.append(stripped)
+    return names
+
+
+def _ldd_dependency_paths(path: pathlib.Path) -> tuple[list[pathlib.Path], list[str]]:
+    tool = _tool_path(["ldd"])
+    if not tool:
+        return [], []
+    output = _run_dependency_tool([tool, str(path)])
+    paths: list[pathlib.Path] = []
+    missing: list[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if "not found" in stripped:
+            missing.append(stripped.split()[0])
+            continue
+        candidate = ""
+        if "=>" in stripped:
+            right = stripped.split("=>", 1)[1].strip()
+            candidate = right.split("(", 1)[0].strip()
+        elif stripped.startswith("/"):
+            candidate = stripped.split("(", 1)[0].strip()
+        if candidate:
+            dependency = pathlib.Path(candidate)
+            if dependency.exists() and dependency not in paths:
+                paths.append(dependency)
+    return paths, missing
+
+
+def _otool_dependency_paths(path: pathlib.Path) -> list[pathlib.Path]:
+    tool = _tool_path(["otool"])
+    if not tool:
+        return []
+    output = _run_dependency_tool([tool, "-L", str(path)])
+    paths: list[pathlib.Path] = []
+    for line in output.splitlines()[1:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        name = stripped.split(" ", 1)[0]
+        dependency: Optional[pathlib.Path] = None
+        if name.startswith("/"):
+            dependency = pathlib.Path(name)
+        elif name.startswith("@loader_path/"):
+            dependency = path.parent / name.removeprefix("@loader_path/")
+        elif name.startswith("@rpath/"):
+            dependency = _find_dependency_file(
+                pathlib.Path(name).name,
+                _runtime_search_dirs(path.parent),
+            )
+        if dependency is not None and dependency.exists() and dependency not in paths:
+            paths.append(dependency)
+    return paths
+
+
+def _is_platform_library(path: pathlib.Path) -> bool:
+    if platform.system() == "Darwin":
+        text = str(path)
+        return text.startswith("/usr/lib/") or text.startswith("/System/Library/")
+    return False
+
+
+def _runtime_basename_is_cacheable(name: str) -> bool:
+    lowered = name.lower()
+    return (
+        lowered.startswith("libstdc++")
+        or lowered.startswith("libgcc_s")
+        or lowered.startswith("libwinpthread")
+        or lowered.startswith("libgomp")
+        or lowered.startswith("libquadmath")
+        or lowered.startswith("libatomic")
+        or lowered.startswith("libc++")
+        or lowered.startswith("libc++abi")
+    )
+
+
+def _runtime_search_dirs(cache_dir: pathlib.Path) -> list[pathlib.Path]:
+    directories = [cache_dir, *_compiler_runtime_path_entries(), *_path_entries()]
+    result: list[pathlib.Path] = []
+    for directory in directories:
+        if directory.exists() and directory.is_dir() and directory not in result:
+            result.append(directory)
+    return result
+
+
+def _find_dependency_file(name: str, directories: Sequence[pathlib.Path]) -> Optional[pathlib.Path]:
+    wanted = name.lower()
+    for directory in directories:
+        candidate = directory / name
+        if candidate.exists() and candidate.is_file():
+            return candidate
+        try:
+            for item in directory.iterdir():
+                if item.is_file() and item.name.lower() == wanted:
+                    return item
+        except OSError:
+            continue
+    return None
+
+
+def _copy_file_if_needed(source: pathlib.Path, destination: pathlib.Path) -> None:
+    try:
+        if destination.exists() and source.resolve() == destination.resolve():
+            return
+    except OSError:
+        pass
+    copy_needed = True
+    if destination.exists():
+        try:
+            source_stat = source.stat()
+            destination_stat = destination.stat()
+            copy_needed = (
+                source_stat.st_size != destination_stat.st_size
+                or source_stat.st_mtime_ns != destination_stat.st_mtime_ns
+            )
+        except OSError:
+            copy_needed = True
+    if copy_needed:
+        shutil.copy2(source, destination)
+
+
+def _windows_dependency_names(path: pathlib.Path) -> list[str]:
+    names = _objdump_dependency_names(path) or _dumpbin_dependency_names(path)
+    if names:
+        return names
+    return [
+        "libstdc++-6.dll",
+        "libgcc_s_seh-1.dll",
+        "libgcc_s_sjlj-1.dll",
+        "libgcc_s_dw2-1.dll",
+        "libwinpthread-1.dll",
+    ]
+
+
+def _runtime_fingerprint() -> bytes:
+    digest = hashlib.sha256()
+    if platform.system() == "Windows":
+        names = _windows_dependency_names(pathlib.Path("pdcode-simplify-placeholder.dll"))
+    else:
+        names = [
+            "libstdc++.so",
+            "libstdc++.so.6",
+            "libgcc_s.so",
+            "libgcc_s.so.1",
+            "libc++.dylib",
+            "libc++abi.dylib",
+        ]
+    for directory in _compiler_runtime_path_entries():
+        for name in names:
+            candidate = directory / name
+            if not candidate.exists():
+                continue
+            try:
+                stat = candidate.stat()
+            except OSError:
+                continue
+            digest.update(str(candidate).encode("utf-8", errors="replace"))
+            digest.update(str(stat.st_size).encode("ascii"))
+            digest.update(str(stat.st_mtime_ns).encode("ascii"))
+    return digest.digest()
+
+
+def _cache_runtime_dependencies(library: pathlib.Path) -> None:
+    system = platform.system()
+    if system == "Windows":
+        search_dirs = _runtime_search_dirs(library.parent)
+        pending = list(_windows_dependency_names(library))
+        visited: set[str] = set()
+        while pending:
+            name = pending.pop(0)
+            key = name.lower()
+            if key in visited:
+                continue
+            visited.add(key)
+            if not _runtime_basename_is_cacheable(name):
+                continue
+            source = _find_dependency_file(name, search_dirs)
+            if source is None:
+                continue
+            destination = library.parent / source.name
+            _copy_file_if_needed(source, destination)
+            for imported in _windows_dependency_names(destination):
+                if imported.lower() not in visited:
+                    pending.append(imported)
+        return
+
+    if system == "Linux":
+        paths, _ = _ldd_dependency_paths(library)
+    elif system == "Darwin":
+        paths = _otool_dependency_paths(library)
+    else:
+        paths = []
+
+    for dependency in paths:
+        if _is_platform_library(dependency):
+            continue
+        if _runtime_basename_is_cacheable(dependency.name):
+            _copy_file_if_needed(dependency, library.parent / dependency.name)
+
+
+def _cached_runtime_dependencies(library: pathlib.Path) -> list[pathlib.Path]:
+    result: list[pathlib.Path] = []
+    try:
+        items = list(library.parent.iterdir())
+    except OSError:
+        return result
+    for item in items:
+        if item == library or not item.is_file():
+            continue
+        if _runtime_basename_is_cacheable(item.name):
+            result.append(item)
+    return result
+
+
+def _missing_runtime_dependency_names(library: pathlib.Path) -> list[str]:
+    system = platform.system()
+    if system == "Windows":
+        search_dirs = _runtime_search_dirs(library.parent)
+        missing = []
+        for name in _windows_dependency_names(library):
+            if _runtime_basename_is_cacheable(name) and _find_dependency_file(name, search_dirs) is None:
+                missing.append(name)
+        return missing
+    if system == "Linux":
+        _, missing = _ldd_dependency_paths(library)
+        return missing
+    return []
+
+
+def _load_failure_message(path: pathlib.Path, error: OSError) -> str:
+    system = platform.system()
+    missing = _missing_runtime_dependency_names(path)
+    details = f"failed to load cached dynamic library {path}: {error}"
+    if missing:
+        details += "; missing dependencies: " + ", ".join(sorted(set(missing)))
+    if system == "Windows":
+        details += (
+            ". The interface caches MinGW runtime DLLs next to the generated DLL; "
+            "if this cache was created by an older package version, delete the cache directory "
+            f"{path.parent} or call compile_simplifier(force=True)."
+        )
+    elif system == "Linux":
+        details += (
+            ". Ensure the compiler runtime is installed, or set LD_LIBRARY_PATH before "
+            "starting Python when using a custom compiler runtime."
+        )
+    elif system == "Darwin":
+        details += (
+            ". Ensure the compiler runtime is installed, or set DYLD_LIBRARY_PATH before "
+            "starting Python when using a custom compiler runtime."
+        )
+    return details
 
 
 def _pe_machine_bits(path: pathlib.Path) -> Optional[int]:
@@ -334,6 +673,7 @@ def compile_simplifier(
             flags.extend(str(flag) for flag in extra_flags)
 
         if library.exists() and not force:
+            _cache_runtime_dependencies(library)
             return library
 
         tmp_library = cache / f"{library.name}.tmp-{os.getpid()}{_library_suffix()}"
@@ -358,6 +698,7 @@ def compile_simplifier(
         if not tmp_library.exists():
             raise PdCodeSimplifyInterfaceError(f"compiled dynamic library was not created: {tmp_library}")
         os.replace(tmp_library, library)
+        _cache_runtime_dependencies(library)
         return library
 
 
@@ -381,12 +722,23 @@ _DLL_DIRECTORY_HANDLES: list[Any] = []
 def _prepare_dll_search_path(path: pathlib.Path) -> None:
     if platform.system() != "Windows" or not hasattr(os, "add_dll_directory"):
         return
-    for directory in [path.parent, *_compiler_runtime_path_entries()]:
+    for directory in _runtime_search_dirs(path.parent):
         try:
             handle = os.add_dll_directory(str(directory))
         except OSError:
             continue
         _DLL_DIRECTORY_HANDLES.append(handle)
+
+
+def _preload_runtime_dependencies(path: pathlib.Path) -> None:
+    if platform.system() == "Windows":
+        return
+    mode = getattr(ctypes, "RTLD_GLOBAL", 0)
+    for dependency in _cached_runtime_dependencies(path):
+        try:
+            ctypes.CDLL(str(dependency), mode=mode)
+        except OSError:
+            continue
 
 
 def _load_library() -> ctypes.CDLL:
@@ -396,8 +748,13 @@ def _load_library() -> ctypes.CDLL:
         return _LOADED_LIBRARY
 
     _validate_library_architecture(path)
+    _cache_runtime_dependencies(path)
     _prepare_dll_search_path(path)
-    library = ctypes.CDLL(str(path))
+    _preload_runtime_dependencies(path)
+    try:
+        library = ctypes.CDLL(str(path))
+    except OSError as exc:
+        raise PdCodeSimplifyInterfaceError(_load_failure_message(path, exc)) from exc
     library.pdcode_simplify_run_json.argtypes = [
         ctypes.c_char_p,
         ctypes.c_int,

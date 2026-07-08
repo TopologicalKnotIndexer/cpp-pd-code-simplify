@@ -46,7 +46,8 @@ python -m cpp_pd_code_simplify_interface "PD[]"
 ```
 
 The package compiles a cached local dynamic library on first use, so a C++14
-compiler must be available. From Python:
+compiler must be available. The interface caches non-system compiler runtime
+libraries beside that dynamic library when needed. From Python:
 
 ```python
 import cpp_pd_code_simplify_interface as simplify
