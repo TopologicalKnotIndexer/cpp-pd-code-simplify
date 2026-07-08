@@ -402,6 +402,8 @@ def _load_library() -> ctypes.CDLL:
         ctypes.c_char_p,
         ctypes.c_int,
         ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
         ctypes.c_ulonglong,
         ctypes.POINTER(ctypes.c_int),
         ctypes.c_ulonglong,
@@ -419,9 +421,13 @@ def _run_one(
     *,
     max_paths: int = -1,
     ban_heuristic: bool = False,
+    reduction_round: int = -1,
+    verbose: bool = False,
     known_crossingless_components: int = 0,
     remove_crossings: Optional[Sequence[int]] = None,
 ) -> dict[str, Any]:
+    if reduction_round < -1:
+        raise ValueError("reduction_round must be -1 or a non-negative integer")
     library = _load_library()
     removed_count = 0 if remove_crossings is None else len(remove_crossings)
     removed_array = None
@@ -432,6 +438,8 @@ def _run_one(
         pd_text.encode("utf-8"),
         int(max_paths),
         1 if ban_heuristic else 0,
+        int(reduction_round),
+        1 if verbose else 0,
         int(known_crossingless_components),
         removed_array,
         int(removed_count),
@@ -457,6 +465,8 @@ def simplify(
     *,
     max_paths: int = -1,
     ban_heuristic: bool = False,
+    reduction_round: int = -1,
+    verbose: bool = False,
     known_crossingless_components: int = 0,
     remove_crossings: Optional[Sequence[int]] = None,
 ) -> dict[str, Any]:
@@ -466,6 +476,8 @@ def simplify(
         normalize_pd_code(pd_code),
         max_paths=max_paths,
         ban_heuristic=ban_heuristic,
+        reduction_round=reduction_round,
+        verbose=verbose,
         known_crossingless_components=known_crossingless_components,
         remove_crossings=remove_crossings,
     )
@@ -476,6 +488,8 @@ def simplify_many(
     *,
     max_paths: int = -1,
     ban_heuristic: bool = False,
+    reduction_round: int = -1,
+    verbose: bool = False,
     known_crossingless_components: int = 0,
     remove_crossings: Optional[Sequence[int]] = None,
 ) -> list[dict[str, Any]]:
@@ -486,6 +500,8 @@ def simplify_many(
             pd_text,
             max_paths=max_paths,
             ban_heuristic=ban_heuristic,
+            reduction_round=reduction_round,
+            verbose=verbose,
             known_crossingless_components=known_crossingless_components,
             remove_crossings=remove_crossings,
         )
@@ -496,16 +512,24 @@ def simplify_many(
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run cpp-pd-code-simplify through the Python interface.")
     parser.add_argument("pd_code", nargs="?", help="PD code as PD[...] text or a Python-style list of crossings.")
+    parser.add_argument("--pd-code", "-c", dest="pd_code_option", help="literal PD[...] string")
     parser.add_argument("--pd-file", "-f", help="read one file containing one or more labelled PD-code lines")
     parser.add_argument("--max-paths", type=int, default=-1)
     parser.add_argument("--ban-heuristic", action="store_true")
+    parser.add_argument("--reduction-round", type=int, default=-1)
+    parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--known-crossingless-components", type=int, default=0)
     parser.add_argument("--remove-crossings", help="comma-separated zero-based crossing indices")
     args = parser.parse_args(argv)
-    if args.pd_file and args.pd_code:
-        parser.error("pass either a positional PD code or --pd-file, not both")
-    if not args.pd_file and not args.pd_code:
-        parser.error("a positional PD code or --pd-file is required")
+    if args.reduction_round < -1:
+        parser.error("--reduction-round must be -1 or a non-negative integer")
+    if args.pd_code and args.pd_code_option:
+        parser.error("pass either a positional PD code or --pd-code, not both")
+    pd_code_text = args.pd_code_option or args.pd_code
+    if args.pd_file and pd_code_text:
+        parser.error("pass either a PD code or --pd-file, not both")
+    if not args.pd_file and not pd_code_text:
+        parser.error("a PD code or --pd-file is required")
     remove_crossings = None
     if args.remove_crossings:
         remove_crossings = [int(token) for token in re.findall(r"-?\d+", args.remove_crossings)]
@@ -521,6 +545,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     line,
                     max_paths=args.max_paths,
                     ban_heuristic=args.ban_heuristic,
+                    reduction_round=args.reduction_round,
+                    verbose=args.verbose,
                     known_crossingless_components=args.known_crossingless_components,
                     remove_crossings=remove_crossings,
                 )
@@ -536,9 +562,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         payload: Any = batch_payload
     else:
         payload = simplify(
-            args.pd_code or "",
+            pd_code_text or "",
             max_paths=args.max_paths,
             ban_heuristic=args.ban_heuristic,
+            reduction_round=args.reduction_round,
+            verbose=args.verbose,
             known_crossingless_components=args.known_crossingless_components,
             remove_crossings=remove_crossings,
         )

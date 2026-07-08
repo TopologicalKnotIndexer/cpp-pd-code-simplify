@@ -291,16 +291,30 @@ def copy_windows_runtime_dlls(cxx: str, destinations: Iterable[Path]) -> None:
         if entry:
             search_dirs.append(Path(entry))
 
-    names = [
-        "libstdc++-6.dll",
+    names = ["libstdc++-6.dll", "libwinpthread-1.dll"]
+    libgcc_variants = [
         "libgcc_s_seh-1.dll",
         "libgcc_s_dw2-1.dll",
         "libgcc_s_sjlj-1.dll",
-        "libwinpthread-1.dll",
     ]
+    libgcc_source = next(
+        (
+            directory / name
+            for directory in search_dirs
+            for name in libgcc_variants
+            if (directory / name).exists()
+        ),
+        None,
+    )
+    if libgcc_source is not None:
+        names.append(libgcc_source.name)
+
     copied = set()
     for name in names:
-        source = next((directory / name for directory in search_dirs if (directory / name).exists()), None)
+        if libgcc_source is not None and name == libgcc_source.name:
+            source = libgcc_source
+        else:
+            source = next((directory / name for directory in search_dirs if (directory / name).exists()), None)
         if source is None:
             continue
         for destination in destinations:

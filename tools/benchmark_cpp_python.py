@@ -73,13 +73,14 @@ def run_peak(
     command: List[str],
     sample_interval: float = 0.01,
     env: Optional[Mapping[str, str]] = None,
+    verbose: bool = False,
 ) -> Tuple[float, float, int]:
     start = time.perf_counter()
     proc = psutil.Popen(
         command,
         cwd=str(ROOT),
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=None if verbose else subprocess.DEVNULL,
         text=True,
         env=env,
     )
@@ -125,9 +126,23 @@ def write_batch_file(cases: Sequence[BenchmarkCase]) -> Path:
     return Path(handle.name)
 
 
-def commands_for_batch(cpp_exe: str, pd_file: Path, max_paths: int) -> Mapping[str, List[str]]:
+def commands_for_batch(
+    cpp_exe: str,
+    pd_file: Path,
+    max_paths: int,
+    reduction_round: int,
+) -> Mapping[str, List[str]]:
     return {
-        "cpp": [cpp_exe, "--json", "--pd-file", str(pd_file), "--max-paths", str(max_paths)],
+        "cpp": [
+            cpp_exe,
+            "--json",
+            "--pd-file",
+            str(pd_file),
+            "--max-paths",
+            str(max_paths),
+            "--reduction-round",
+            str(reduction_round),
+        ],
         "python": [
             PYTHON,
             str(ROOT / "mid_simplify_v5.py"),
@@ -136,6 +151,8 @@ def commands_for_batch(cpp_exe: str, pd_file: Path, max_paths: int) -> Mapping[s
             str(pd_file),
             "--max-paths",
             str(max_paths),
+            "--reduction-round",
+            str(reduction_round),
         ],
         "interface": [
             PYTHON,
@@ -145,12 +162,18 @@ def commands_for_batch(cpp_exe: str, pd_file: Path, max_paths: int) -> Mapping[s
             str(pd_file),
             "--max-paths",
             str(max_paths),
+            "--reduction-round",
+            str(reduction_round),
         ],
     }
 
 
 def add_ban_heuristic(command: List[str]) -> List[str]:
     return command + ["--ban-heuristic"]
+
+
+def add_verbose(command: List[str]) -> List[str]:
+    return command + ["--verbose"]
 
 
 SUITES: Mapping[str, Sequence[BenchmarkCase]] = {
@@ -171,23 +194,32 @@ def run_benchmark(
     cpp_exe: str,
     cases: Sequence[BenchmarkCase],
     max_paths: int,
+    reduction_round: int,
     repeat: int,
     sample_interval: float,
     interface_cxx: Optional[str] = None,
     ban_heuristic: bool = False,
+    verbose: bool = False,
 ) -> List[RawRow]:
     rows: List[RawRow] = []
     total_crossings = sum(case.crossings for case in cases)
     warm_interface_cache(sample_interval, interface_cxx)
     pd_file = write_batch_file(cases)
     try:
-        commands = dict(commands_for_batch(cpp_exe, pd_file, max_paths))
+        commands = dict(commands_for_batch(cpp_exe, pd_file, max_paths, reduction_round))
         if ban_heuristic:
             commands = {engine: add_ban_heuristic(command) for engine, command in commands.items()}
+        if verbose:
+            commands = {engine: add_verbose(command) for engine, command in commands.items()}
         for repeat_index in range(1, repeat + 1):
             for engine in ("cpp", "interface", "python"):
                 env = interface_env(interface_cxx) if engine == "interface" else None
-                elapsed, peak_mib, return_code = run_peak(commands[engine], sample_interval, env=env)
+                elapsed, peak_mib, return_code = run_peak(
+                    commands[engine],
+                    sample_interval,
+                    env=env,
+                    verbose=verbose,
+                )
                 row: RawRow = {
                     "case": "batch",
                     "family": "mixed",
@@ -275,6 +307,7 @@ def plot_aggregate(
     case_count: int,
     repeat: int,
     max_paths: int,
+    reduction_round: int,
     suite: str,
     ban_heuristic: bool,
 ) -> None:
@@ -335,7 +368,8 @@ def plot_aggregate(
         0.02,
         (
             f"Single-process batches over {case_count} deterministic cases, {repeat} repeat(s), "
-            f"max_paths={max_paths}, heuristic={'off' if ban_heuristic else 'on'}. "
+            f"max_paths={max_paths}, reduction_round={reduction_round}, "
+            f"heuristic={'off' if ban_heuristic else 'on'}. "
             f"C++ is {time_speedup:.1f}x faster; "
             f"interface is {interface_overhead:.1f}x C++ time; Python uses {rss_ratio:.1f}x peak RSS."
         ),
@@ -376,6 +410,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--cpp-exe", default=None, help="path to pd_simplify executable")
     parser.add_argument("--max-paths", type=int, default=-1)
     parser.add_argument("--ban-heuristic", action="store_true")
+    parser.add_argument("--reduction-round", type=int, default=-1)
+    parser.add_argument("--verbose", action="store_true", help="forward progress logs from child processes")
     parser.add_argument("--repeat", type=int, default=3, help="measurement repeats per case and engine")
     parser.add_argument(
         "--suite",
@@ -403,10 +439,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         cpp_exe,
         cases,
         args.max_paths,
+        args.reduction_round,
         args.repeat,
         args.sample_interval,
         interface_cxx=args.interface_cxx,
         ban_heuristic=args.ban_heuristic,
+        verbose=args.verbose,
     )
     summary = summarize_rows(rows)
     aggregate = aggregate_by_engine(summary)
@@ -451,9 +489,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.json,
             {
                 "max_paths": args.max_paths,
+                "reduction_round": args.reduction_round,
                 "repeat": args.repeat,
                 "suite": args.suite,
                 "ban_heuristic": args.ban_heuristic,
+                "verbose": args.verbose,
                 "raw": rows,
                 "summary": summary,
                 "aggregate": aggregate,
@@ -466,6 +506,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             len(cases),
             args.repeat,
             args.max_paths,
+            args.reduction_round,
             args.suite,
             args.ban_heuristic,
         )

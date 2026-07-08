@@ -211,6 +211,12 @@ void test_reference_sample() {
     require(result.found, "reference PD code should have a simplification witness");
     require(!result.red_path.empty(), "witness should include a red path");
     require(!result.green_path.empty(), "witness should include a green path");
+
+    const auto reduced = pdcode_simplify::reduce_pd_code(code);
+    require(reduced.code.size() == 4,
+            "full reference reduction should apply witnesses and end at four crossings");
+    require(reduced.mid_simplification_rounds > 0,
+            "full reference reduction should use at least one mid-simplification round");
 }
 
 }  // namespace

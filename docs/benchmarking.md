@@ -71,8 +71,9 @@ Run the zip-random large-case suite separately:
 ```sh
 .\.venv\Scripts\python tools\benchmark_cpp_python.py ^
   --suite random ^
-  --repeat 3 ^
+  --repeat 1 ^
   --max-paths -1 ^
+  --reduction-round 3 ^
   --interface-cxx C:\path\to\g++.exe ^
   --plot docs\assets\benchmark_random_cpp_python.png ^
   --summary-csv docs\assets\benchmark_random_summary.csv ^
@@ -89,9 +90,13 @@ chart reports normal cached `ctypes` calls rather than first-use compilation
 time.
 
 The original lightweight suite is run with `--max-paths -1 --ban-heuristic`,
-which means complete green-path enumeration after preprocessing. The large
-zip-random suite is run with `--max-paths -1`, which means deterministic
-heuristic green-path sampling.
+`--reduction-round -1`, which means complete green-path enumeration after
+preprocessing and iteration until stable. The large zip-random suite is run
+with `--max-paths -1 --reduction-round 3`, which means deterministic
+heuristic green-path sampling and a three-round cap. Full terminal
+brute-force stability proofs on these 120-150 crossing diagrams can dominate
+runtime; use `--verbose` to inspect the exact round where a run is spending
+time.
 
 Each measurement repeat writes the selected cases to one temporary multi-line
 PD-code file, then starts each engine once to process the whole file. The chart
@@ -108,25 +113,25 @@ benchmark and runs only on the ten zip-random large cases:
 ```sh
 .\.venv\Scripts\python tools\benchmark_cpp_heuristic.py ^
   --repeat 1 ^
+  --reduction-round 3 ^
+  --timeout 60 ^
   --plot docs\assets\heuristic_vs_bruteforce_random.png ^
   --summary-csv docs\assets\heuristic_vs_bruteforce_random_summary.csv ^
   --raw-csv docs\assets\heuristic_vs_bruteforce_random_raw.csv ^
   --json docs\assets\heuristic_vs_bruteforce_random_results.json
 ```
 
-The reduction metric for that chart is the observed preprocessing reduction
-plus the first witness's red-green path length difference, divided by the
-original crossing count. The CLI currently reports a witness instead of
-rewriting the diagram by that witness, so this is a one-step reduction
-potential metric.
+The reduction metric for that chart is actual crossing reduction after the
+configured number of applied rounds, divided by the original crossing count.
+Timeouts are recorded as timed-out rows instead of aborting the benchmark.
 
 ## Local Results
 
 The committed charts were generated on the local Windows development machine
-with a MinGW `g++ -O3 -DNDEBUG` C++ executable. The original lightweight suite
-uses `max_paths=-1` with heuristic disabled; the zip-random suite uses
-`max_paths=-1` with heuristic enabled. Each three-engine suite uses three
-repeats.
+with a local 64-bit MinGW `g++ -O3 -DNDEBUG` C++ executable. The original
+lightweight suite uses `max_paths=-1`, heuristic disabled, and
+`reduction_round=-1`. The zip-random suite uses `max_paths=-1`, heuristic
+enabled, and `reduction_round=3`.
 
 Original lightweight suite:
 
@@ -134,9 +139,9 @@ Original lightweight suite:
 
 | Engine | Average Time Per PD Code (s) | Average Peak RSS (MiB) |
 | --- | ---: | ---: |
-| C++ CLI | 0.494679 | 6.383 |
-| Python C++ interface | 0.338129 | 30.682 |
-| Python | 7.990471 | 26.214 |
+| C++ CLI | 0.139629 | 5.417 |
+| Python C++ interface | 0.155052 | 30.647 |
+| Python | 0.993588 | 27.158 |
 
 Zip-random large-case suite:
 
@@ -144,9 +149,9 @@ Zip-random large-case suite:
 
 | Engine | Average Time Per PD Code (s) | Average Peak RSS (MiB) |
 | --- | ---: | ---: |
-| C++ CLI | 0.169238 | 6.465 |
-| Python C++ interface | 0.141012 | 30.659 |
-| Python | 0.296344 | 26.352 |
+| C++ CLI | 0.912638 | 5.965 |
+| Python C++ interface | 0.886163 | 31.129 |
+| Python | 8.612555 | 27.789 |
 
 Summary CSV files are stored in
 [`docs/assets/benchmark_original_summary.csv`](assets/benchmark_original_summary.csv)
@@ -159,8 +164,12 @@ C++ heuristic-vs-brute-force comparison on the zip-random large-case suite:
 
 | Mode | Average Time Per PD Code (s) | Reduction / Original Crossings (%) |
 | --- | ---: | ---: |
-| Heuristic | 0.174462 | 32.338 |
-| Brute force | 0.340326 | 31.901 |
+| Heuristic | 0.973676 | 39.985 |
+| Brute force | 19.144971 | 31.828 |
+
+The brute-force row includes two 60-second timeouts. Those rows are counted as
+zero completed reduction for the effect metric and as 60 seconds for the time
+metric.
 
 The summary CSV is stored in
 [`docs/assets/heuristic_vs_bruteforce_random_summary.csv`](assets/heuristic_vs_bruteforce_random_summary.csv).

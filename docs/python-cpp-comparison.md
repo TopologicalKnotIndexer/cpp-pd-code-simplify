@@ -22,7 +22,8 @@ then nugatory-crossing removal.
   --suite original ^
   --include-interface ^
   --max-paths -1 ^
-  --ban-heuristic
+  --ban-heuristic ^
+  --reduction-round -1
 ```
 
 To compare the ten zip-random large cases with heuristic green-path sampling:
@@ -32,16 +33,18 @@ To compare the ten zip-random large cases with heuristic green-path sampling:
   --include-benchmark ^
   --suite random ^
   --include-interface ^
-  --max-paths -1
+  --max-paths -1 ^
+  --reduction-round 3
 ```
 
 On Linux and macOS, use `.venv/bin/python` instead of
 `.\.venv\Scripts\python`.
 
-Return code `0` from either simplifier means a simplification witness was
-found. Return code `1` means the run completed normally but found no witness.
-Batch mode keeps going after item-level errors and reports them in JSON so a
-bad PD code does not prevent later inputs from being checked.
+Return code `0` from either simplifier means every item was processed
+successfully, including inputs that are already stable. Return code `2` means
+at least one item reported an error. Batch mode keeps going after item-level
+errors and reports them in JSON so a bad PD code does not prevent later inputs
+from being checked.
 
 ## Benchmarking
 

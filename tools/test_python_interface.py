@@ -18,29 +18,64 @@ import cpp_pd_code_simplify_interface as interface  # noqa: E402
 TREFOIL = "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]"
 
 
+def preferred_cxx() -> str | None:
+    for key in ("CPP_PD_CODE_SIMPLIFY_INTERFACE_TEST_CXX", "CXX"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    candidates = [
+        ROOT
+        / ".local_toolchains"
+        / "winlibs-x86_64-posix-seh-gcc-16.1.0-mingw-w64ucrt-14.0.0-r3"
+        / "mingw64"
+        / "bin"
+        / "g++.exe",
+        ROOT
+        .parent
+        .parent
+        / "javakh_ori-latest"
+        / "toolchains"
+        / "winlibs-x86_64-posix-seh-gcc-16.1.0-mingw-w64ucrt-14.0.0-r3"
+        / "mingw64"
+        / "bin"
+        / "g++.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def main() -> int:
     if "CPP_PD_CODE_SIMPLIFY_INTERFACE_CACHE_DIR" not in os.environ:
         os.environ["CPP_PD_CODE_SIMPLIFY_INTERFACE_CACHE_DIR"] = str(ROOT / ".cache" / "python-interface")
 
-    library = interface.compile_simplifier(force=True)
+    library = interface.compile_simplifier(force=True, cxx=preferred_cxx())
     assert library.exists(), library
 
     trefoil = interface.simplify(TREFOIL)
     assert trefoil["simplification_found"] is False
     assert trefoil["input_components"]["total_components"] == 1
-    assert trefoil["path_search_mode"] == "heuristic"
+    assert trefoil["final_crossings"] == 3
+    assert trefoil["final_components"]["total_components"] == 1
+    assert trefoil["last_path_search_mode"] == "bruteforce"
 
     unknot = interface.simplify("PD[]")
     assert unknot["input_components"]["crossingless_components"] == 1
-    assert unknot["path_search_mode"] == "heuristic"
+    assert unknot["final_pd_code"] == "PD[]"
+    assert unknot["last_path_search_mode"] == "bruteforce"
 
     kink = interface.simplify("PD[X[0,0,1,1]]")
-    assert kink["pd_simplification"]["reidemeister_i_moves"] == 1
-    assert kink["search_components"]["crossingless_components"] == 1
-    assert kink["path_search_mode"] == "heuristic"
+    assert kink["reidemeister_i_moves"] == 1
+    assert kink["final_components"]["crossingless_components"] == 1
+    assert kink["final_pd_code"] == "PD[]"
 
     brute = interface.simplify(TREFOIL, ban_heuristic=True)
-    assert brute["path_search_mode"] == "bruteforce"
+    assert brute["last_path_search_mode"] == "bruteforce"
+
+    limited = interface.simplify(TREFOIL, reduction_round=0)
+    assert limited["stopped_by_round_limit"] is True
+    assert limited["final_crossings"] == 3
 
     batch = interface.simplify_many([TREFOIL, "PD[]"])
     assert len(batch) == 2

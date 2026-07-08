@@ -88,6 +88,8 @@ component.
 --json                         Print JSON output.
 --max-paths N                  Cap accepted green paths; default -1.
 --ban-heuristic                With --max-paths -1, enumerate all green paths.
+--reduction-round K            Maximum mid-simplification rounds; -1 means until stable.
+--verbose                      Print progress logs to stderr.
 --known-crossingless-components N
                                Add N components not representable in PD code.
 --remove-crossings LIST        Report component counts after removing crossings.
@@ -98,6 +100,12 @@ component.
 heuristic green-path sampling. Add `--ban-heuristic` to run exhaustive
 green-path enumeration instead. If `--max-paths` is any other integer, the
 legacy bounded path collector is used.
+
+`--reduction-round -1` is the default. It repeatedly applies valid
+mid-simplification witnesses. In heuristic mode, if the heuristic can no
+longer find an applicable path, the executable runs one brute-force
+enumeration pass before declaring the diagram stable. Use
+`--reduction-round K` to cap the number of applied mid-simplification rounds.
 
 ## Component Accounting
 
@@ -119,9 +127,10 @@ R1-move removal followed by nugatory-crossing removal is enabled by default.
 Batch mode keeps going after a single input fails; failed items are reported
 with an `error` field in JSON output or an `error:` line in text output.
 
-The process exits with code `0` when every input finds a witness, `1` when at
-least one input completes without a witness, and `2` when at least one input
-reports an error.
+The process exits with code `0` when every input is processed successfully,
+including inputs that are already stable. It exits with code `2` when at
+least one input reports an error. In batch mode, errors are isolated to the
+failing item and later PD codes still run.
 
 ## C++ Library Use
 
@@ -131,7 +140,8 @@ reports an error.
 auto code = pdcode_simplify::parse_pd_code("PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]");
 auto components = pdcode_simplify::analyze_components(code);
 auto prepared = pdcode_simplify::simplify_pd_code(code);
-auto result = pdcode_simplify::find_simplification(prepared.code);
+auto result = pdcode_simplify::reduce_pd_code(code);
+std::cout << pdcode_simplify::format_pd_code(result.code) << "\n";
 ```
 
 The library also includes deterministic test helpers for Reidemeister I/II

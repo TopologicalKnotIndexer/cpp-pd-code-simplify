@@ -1004,16 +1004,28 @@ void reset_weights(DualGraph& graph) {
     }
 }
 
+std::vector<int> heuristic_distances_to_target(
+    const DualGraph& graph,
+    int target,
+    int cutoff);
+
 void collect_simple_paths_dfs(
     const DualGraph& graph,
     int current,
     int target,
     int cutoff,
     int max_paths,
+    int current_weight,
+    const std::vector<int>& distance,
     std::vector<char>& visited,
     std::vector<int>& current_path,
     std::vector<std::vector<int>>& paths) {
+    const int infinity = std::numeric_limits<int>::max() / 4;
     if (static_cast<int>(current_path.size()) - 1 >= cutoff) {
+        return;
+    }
+    if (current < 0 || current >= static_cast<int>(distance.size()) ||
+        distance[current] == infinity || current_weight + distance[current] >= cutoff) {
         return;
     }
 
@@ -1023,32 +1035,37 @@ void collect_simple_paths_dfs(
         if (visited[next]) {
             continue;
         }
+        const int next_weight = current_weight + edge.weight;
+        if (next_weight >= cutoff) {
+            continue;
+        }
+        if (next < 0 || next >= static_cast<int>(distance.size()) ||
+            distance[next] == infinity || next_weight + distance[next] >= cutoff) {
+            continue;
+        }
 
         current_path.push_back(next);
         visited[next] = true;
 
         if (next == target) {
-            int path_weight = 0;
-            for (std::size_t i = 0; i + 1 < current_path.size(); ++i) {
-                const GraphEdge* path_edge = graph.edge(current_path[i], current_path[i + 1]);
-                if (path_edge == nullptr) {
-                    throw std::logic_error("Missing dual edge while weighing a path");
-                }
-                path_weight += path_edge->weight;
-                if (path_weight >= cutoff) {
-                    break;
-                }
-            }
-            if (path_weight < cutoff) {
-                paths.push_back(current_path);
-            }
+            paths.push_back(current_path);
             if (max_paths != -1 && static_cast<int>(paths.size()) > max_paths) {
                 visited[next] = false;
                 current_path.pop_back();
                 return;
             }
         } else {
-            collect_simple_paths_dfs(graph, next, target, cutoff, max_paths, visited, current_path, paths);
+            collect_simple_paths_dfs(
+                graph,
+                next,
+                target,
+                cutoff,
+                max_paths,
+                next_weight,
+                distance,
+                visited,
+                current_path,
+                paths);
             if (max_paths != -1 && static_cast<int>(paths.size()) > max_paths) {
                 visited[next] = false;
                 current_path.pop_back();
@@ -1077,8 +1094,19 @@ std::vector<std::vector<int>> collect_simple_paths(
 
     std::vector<char> visited(graph.faces.size(), false);
     std::vector<int> current_path{source};
+    const std::vector<int> distance = heuristic_distances_to_target(graph, target, cutoff);
     visited[source] = true;
-    collect_simple_paths_dfs(graph, source, target, cutoff, max_paths, visited, current_path, paths);
+    collect_simple_paths_dfs(
+        graph,
+        source,
+        target,
+        cutoff,
+        max_paths,
+        0,
+        distance,
+        visited,
+        current_path,
+        paths);
     return paths;
 }
 
@@ -1446,6 +1474,292 @@ bool do_check(
     return true;
 }
 
+class DisjointSet {
+public:
+    int find(int value) {
+        auto inserted = parent_.insert(std::make_pair(value, value));
+        int parent = inserted.first->second;
+        if (parent != value) {
+            parent = find(parent);
+            parent_[value] = parent;
+        }
+        return parent;
+    }
+
+    void unite(int first, int second) {
+        int first_root = find(first);
+        int second_root = find(second);
+        if (first_root == second_root) {
+            return;
+        }
+        if (second_root < first_root) {
+            std::swap(first_root, second_root);
+        }
+        parent_[second_root] = first_root;
+    }
+
+private:
+    std::map<int, int> parent_;
+};
+
+std::map<std::pair<int, int>, std::string> green_crossing_levels(
+    const SimplificationResult& result) {
+    std::map<std::pair<int, int>, std::string> levels;
+    for (const GreenCrossing& crossing : result.green_crossings) {
+        levels[std::make_pair(crossing.from_face, crossing.to_face)] = crossing.strand_level;
+    }
+    return levels;
+}
+
+void clear_witness(SimplificationResult& result) {
+    result.found = false;
+    result.red_path.clear();
+    result.green_path.clear();
+    result.green_crossings.clear();
+}
+
+}  // namespace
+
+MidSimplificationApplyResult apply_simplification_witness(
+    const PDCode& code,
+    const SimplificationResult& result,
+    std::size_t known_crossingless_components) {
+    if (!result.found) {
+        throw std::invalid_argument("Cannot apply a missing simplification witness");
+    }
+    if (result.red_path.size() < 2) {
+        throw std::invalid_argument("Simplification witness red path is too short");
+    }
+
+    Diagram diagram(code);
+    DualGraph graph(diagram);
+    std::set<int> removed_crossings;
+    std::map<int, int> red_entry_by_crossing;
+    for (std::size_t i = 0; i + 1 < result.red_path.size(); ++i) {
+        removed_crossings.insert(result.red_path[i].crossing);
+        red_entry_by_crossing[result.red_path[i].crossing] = result.red_path[i].strand;
+    }
+    if (removed_crossings.size() != result.red_path.size() - 1) {
+        throw std::invalid_argument("Simplification witness repeats a removed red crossing");
+    }
+    if (removed_crossings.count(result.red_path.back().crossing) != 0) {
+        throw std::invalid_argument("Simplification witness ends inside the removed red arc");
+    }
+
+    const std::map<std::pair<int, int>, std::string> levels = green_crossing_levels(result);
+    DisjointSet dsu;
+    const int endpoint_count = static_cast<int>(code.size() * 4);
+    const int new_crossing_count =
+        result.green_path.empty() ? 0 : static_cast<int>(result.green_path.size()) - 1;
+    const int new_base = endpoint_count;
+
+    auto new_node = [&](int crossing_index, int strand) {
+        return new_base + crossing_index * 4 + strand;
+    };
+    auto is_removed_node = [&](int node) {
+        return node < endpoint_count && removed_crossings.count(node / 4) != 0;
+    };
+    auto is_removed_red_node = [&](int node) {
+        if (!is_removed_node(node)) {
+            return false;
+        }
+        const int crossing = node / 4;
+        const int strand = node % 4;
+        const int red_strand = red_entry_by_crossing.at(crossing);
+        return strand == red_strand || strand == positive_mod(red_strand + 2, 4);
+    };
+
+    std::set<int> crossed_labels;
+    struct CrossedEdge {
+        int interface_from = -1;
+        int interface_to = -1;
+        std::string level;
+    };
+    std::vector<CrossedEdge> crossed_edges;
+    crossed_edges.reserve(new_crossing_count);
+    for (int i = 0; i < new_crossing_count; ++i) {
+        const int from_face = result.green_path[i];
+        const int to_face = result.green_path[i + 1];
+        const GraphEdge* edge = graph.edge(from_face, to_face);
+        if (edge == nullptr) {
+            throw std::invalid_argument("Simplification witness green path crosses a missing dual edge");
+        }
+        const int interface_from = graph.interface_for_face(*edge, from_face);
+        const int interface_to = graph.interface_for_face(*edge, to_face);
+        if (is_removed_red_node(interface_from) || is_removed_red_node(interface_to)) {
+            throw std::invalid_argument("Simplification witness crosses an edge removed with the red arc");
+        }
+        const int label = code[interface_from / 4][interface_from % 4];
+        if (!crossed_labels.insert(label).second) {
+            throw std::invalid_argument("Simplification witness crosses the same PD edge more than once");
+        }
+        const auto level = levels.find(std::make_pair(from_face, to_face));
+        if (level == levels.end()) {
+            throw std::invalid_argument("Simplification witness is missing a green crossing level");
+        }
+        CrossedEdge crossed;
+        crossed.interface_from = interface_from;
+        crossed.interface_to = interface_to;
+        crossed.level = level->second;
+        crossed_edges.push_back(std::move(crossed));
+    }
+
+    std::map<int, std::vector<int>> label_endpoints;
+    for (int crossing_index = 0; crossing_index < static_cast<int>(code.size()); ++crossing_index) {
+        for (int strand = 0; strand < 4; ++strand) {
+            label_endpoints[code[crossing_index][strand]].push_back(crossing_index * 4 + strand);
+        }
+    }
+    for (const auto& item : label_endpoints) {
+        if (item.second.size() != 2) {
+            std::ostringstream message;
+            message << "PD label " << item.first << " appears " << item.second.size() << " times";
+            throw std::invalid_argument(message.str());
+        }
+        if (crossed_labels.count(item.first) == 0) {
+            dsu.unite(item.second[0], item.second[1]);
+        }
+    }
+
+    for (const auto& item : red_entry_by_crossing) {
+        const int crossing = item.first;
+        const int strand = item.second;
+        dsu.unite(crossing * 4 + positive_mod(strand + 1, 4),
+                  crossing * 4 + positive_mod(strand + 3, 4));
+    }
+
+    int green_anchor = endpoint_key(result.red_path.front());
+    for (int i = 0; i < static_cast<int>(crossed_edges.size()); ++i) {
+        const CrossedEdge& crossed = crossed_edges[i];
+        int existing_from_pos = -1;
+        int existing_to_pos = -1;
+        int green_in_pos = -1;
+        int green_out_pos = -1;
+        if (crossed.level == "over") {
+            existing_from_pos = 0;
+            green_in_pos = 1;
+            existing_to_pos = 2;
+            green_out_pos = 3;
+        } else if (crossed.level == "under") {
+            green_in_pos = 0;
+            existing_to_pos = 1;
+            green_out_pos = 2;
+            existing_from_pos = 3;
+        } else {
+            throw std::invalid_argument("Unknown green crossing strand level: " + crossed.level);
+        }
+
+        dsu.unite(crossed.interface_from, new_node(i, existing_from_pos));
+        dsu.unite(crossed.interface_to, new_node(i, existing_to_pos));
+        dsu.unite(green_anchor, new_node(i, green_in_pos));
+        green_anchor = new_node(i, green_out_pos);
+    }
+    dsu.unite(green_anchor, endpoint_key(result.red_path.back()));
+
+    std::vector<int> active_nodes;
+    active_nodes.reserve(endpoint_count + new_crossing_count * 4);
+    for (int node = 0; node < endpoint_count; ++node) {
+        if (!is_removed_node(node)) {
+            active_nodes.push_back(node);
+        }
+    }
+    for (int crossing = 0; crossing < new_crossing_count; ++crossing) {
+        for (int strand = 0; strand < 4; ++strand) {
+            active_nodes.push_back(new_node(crossing, strand));
+        }
+    }
+
+    std::map<int, std::vector<int>> grouped;
+    for (int node : active_nodes) {
+        grouped[dsu.find(node)].push_back(node);
+    }
+
+    std::vector<std::vector<int>> groups;
+    for (auto& item : grouped) {
+        std::sort(item.second.begin(), item.second.end());
+        groups.push_back(item.second);
+    }
+    std::sort(groups.begin(), groups.end(), [](const std::vector<int>& lhs, const std::vector<int>& rhs) {
+        return lhs.front() < rhs.front();
+    });
+
+    std::map<int, int> label_by_node;
+    int next_label = 0;
+    for (const std::vector<int>& nodes : groups) {
+        if (nodes.size() != 2) {
+            std::ostringstream message;
+            message << "Applied simplification produced a non-PD edge with "
+                    << nodes.size() << " active endpoints";
+            throw std::runtime_error(message.str());
+        }
+        for (int node : nodes) {
+            label_by_node[node] = next_label;
+        }
+        ++next_label;
+    }
+
+    PDCode output;
+    output.reserve(code.size() - removed_crossings.size() + static_cast<std::size_t>(new_crossing_count));
+    for (int crossing_index = 0; crossing_index < static_cast<int>(code.size()); ++crossing_index) {
+        if (removed_crossings.count(crossing_index) != 0) {
+            continue;
+        }
+        Crossing crossing{};
+        for (int strand = 0; strand < 4; ++strand) {
+            crossing[strand] = label_by_node.at(crossing_index * 4 + strand);
+        }
+        output.push_back(crossing);
+    }
+    for (int crossing_index = 0; crossing_index < new_crossing_count; ++crossing_index) {
+        Crossing crossing{};
+        for (int strand = 0; strand < 4; ++strand) {
+            crossing[strand] = label_by_node.at(new_node(crossing_index, strand));
+        }
+        output.push_back(crossing);
+    }
+
+    const std::size_t total_components =
+        analyze_components(code, known_crossingless_components).total_components();
+    output = renumber_full_dfs(output);
+    const std::size_t crossing_components = analyze_components(output).components_with_crossings();
+
+    MidSimplificationApplyResult applied;
+    applied.code = std::move(output);
+    applied.crossingless_components =
+        total_components > crossing_components ? total_components - crossing_components : 0;
+    return applied;
+}
+
+namespace {
+
+bool witness_has_applicable_surgery(const PDCode& code, const SimplificationResult& result) {
+    try {
+        (void)apply_simplification_witness(code, result, 0);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+void emit_progress(const SimplifierOptions& options, const std::string& message) {
+    if (!options.verbose) {
+        return;
+    }
+    if (options.progress) {
+        options.progress(message);
+    }
+}
+
+std::string search_mode_for_options(const SimplifierOptions& options) {
+    if (options.max_paths == -1 && !options.ban_heuristic) {
+        return "heuristic";
+    }
+    if (options.max_paths == -1) {
+        return "bruteforce";
+    }
+    return "bounded";
+}
+
 }  // namespace
 
 PDCode parse_pd_code(const std::string& text) {
@@ -1486,13 +1800,13 @@ PDCode parse_pd_code(const std::string& text) {
 
 std::string format_pd_code(const PDCode& code) {
     std::ostringstream out;
-    out << '[';
+    out << "PD[";
     for (std::size_t i = 0; i < code.size(); ++i) {
         if (i != 0) {
-            out << ", ";
+            out << ',';
         }
-        out << '(' << code[i][0] << ", " << code[i][1] << ", "
-            << code[i][2] << ", " << code[i][3] << ')';
+        out << "X[" << code[i][0] << ',' << code[i][1] << ','
+            << code[i][2] << ',' << code[i][3] << ']';
     }
     out << ']';
     return out.str();
@@ -1886,15 +2200,155 @@ SimplificationResult find_simplification(
                 continue;
             }
             if (do_check(diagram, graph, red_path, green_path, Direction::Left, result)) {
-                return result;
+                if (!options.require_applicable || witness_has_applicable_surgery(code, result)) {
+                    return result;
+                }
+                clear_witness(result);
             }
             if (do_check(diagram, graph, red_path, green_path, Direction::Right, result)) {
-                return result;
+                if (!options.require_applicable || witness_has_applicable_surgery(code, result)) {
+                    return result;
+                }
+                clear_witness(result);
             }
         }
     }
 
     return result;
+}
+
+ReductionResult reduce_pd_code(
+    const PDCode& code,
+    std::size_t known_crossingless_components,
+    const SimplifierOptions& options,
+    int reduction_round) {
+    {
+        std::ostringstream message;
+        message << "start input_crossings=" << code.size()
+                << " known_crossingless_components=" << known_crossingless_components
+                << " reduction_round=" << reduction_round
+                << " max_paths=" << options.max_paths
+                << " heuristic=" << (options.ban_heuristic ? "off" : "on");
+        emit_progress(options, message.str());
+    }
+
+    const PDSimplificationResult prepared = simplify_pd_code(code, known_crossingless_components);
+    ReductionResult output;
+    output.code = prepared.code;
+    output.crossingless_components = prepared.crossingless_components;
+    output.reidemeister_i_moves = prepared.reidemeister_i_moves;
+    output.nugatory_crossing_moves = prepared.nugatory_crossing_moves;
+    {
+        std::ostringstream message;
+        message << "pre_simplify input_crossings=" << code.size()
+                << " output_crossings=" << output.code.size()
+                << " crossingless_components=" << output.crossingless_components
+                << " r1_moves=" << prepared.reidemeister_i_moves
+                << " nugatory_moves=" << prepared.nugatory_crossing_moves;
+        emit_progress(options, message.str());
+    }
+
+    while (reduction_round < 0 || output.mid_simplification_rounds < reduction_round) {
+        SimplifierOptions search_options = options;
+        search_options.require_applicable = true;
+        const int round = output.mid_simplification_rounds + 1;
+        {
+            std::ostringstream message;
+            message << "round " << round
+                    << " search_start crossings=" << output.code.size()
+                    << " mode=" << search_mode_for_options(search_options);
+            emit_progress(options, message.str());
+        }
+        SimplificationResult search = find_simplification(output.code, search_options);
+        output.tested_red_paths += search.tested_red_paths;
+        output.tested_green_paths += search.tested_green_paths;
+        output.last_path_search_mode = search.path_search_mode;
+        {
+            std::ostringstream message;
+            message << "round " << round
+                    << " search_done found=" << (search.found ? "yes" : "no")
+                    << " mode=" << search.path_search_mode
+                    << " tested_red=" << search.tested_red_paths
+                    << " tested_green=" << search.tested_green_paths;
+            emit_progress(options, message.str());
+        }
+
+        if (!search.found && reduction_round < 0 &&
+            options.max_paths == -1 && !options.ban_heuristic) {
+            SimplifierOptions brute_options = options;
+            brute_options.max_paths = -1;
+            brute_options.ban_heuristic = true;
+            brute_options.require_applicable = true;
+            {
+                std::ostringstream message;
+                message << "round " << round
+                        << " brute_fallback_start crossings=" << output.code.size();
+                emit_progress(options, message.str());
+            }
+            SimplificationResult brute = find_simplification(output.code, brute_options);
+            output.tested_red_paths += brute.tested_red_paths;
+            output.tested_green_paths += brute.tested_green_paths;
+            output.last_path_search_mode = brute.path_search_mode;
+            {
+                std::ostringstream message;
+                message << "round " << round
+                        << " brute_fallback_done found=" << (brute.found ? "yes" : "no")
+                        << " tested_red=" << brute.tested_red_paths
+                        << " tested_green=" << brute.tested_green_paths;
+                emit_progress(options, message.str());
+            }
+            if (brute.found) {
+                ++output.heuristic_failover_rounds;
+                search = std::move(brute);
+            }
+        }
+
+        if (!search.found) {
+            {
+                std::ostringstream message;
+                message << "round " << round
+                        << " stop_no_path crossings=" << output.code.size();
+                emit_progress(options, message.str());
+            }
+            break;
+        }
+
+        const std::size_t before_apply_crossings = output.code.size();
+        const MidSimplificationApplyResult applied =
+            apply_simplification_witness(output.code, search, output.crossingless_components);
+        ++output.mid_simplification_rounds;
+        const PDSimplificationResult simplified =
+            simplify_pd_code(applied.code, applied.crossingless_components);
+        output.code = simplified.code;
+        output.crossingless_components = simplified.crossingless_components;
+        output.reidemeister_i_moves += simplified.reidemeister_i_moves;
+        output.nugatory_crossing_moves += simplified.nugatory_crossing_moves;
+        {
+            std::ostringstream message;
+            message << "round " << round
+                    << " applied crossings=" << before_apply_crossings
+                    << " -> " << applied.code.size()
+                    << " -> " << output.code.size()
+                    << " crossingless_components=" << output.crossingless_components
+                    << " r1_moves=" << simplified.reidemeister_i_moves
+                    << " nugatory_moves=" << simplified.nugatory_crossing_moves;
+            emit_progress(options, message.str());
+        }
+    }
+
+    output.stopped_by_round_limit =
+        reduction_round >= 0 && output.mid_simplification_rounds >= reduction_round;
+    {
+        std::ostringstream message;
+        message << "done final_crossings=" << output.code.size()
+                << " crossingless_components=" << output.crossingless_components
+                << " mid_rounds=" << output.mid_simplification_rounds
+                << " heuristic_failover_rounds=" << output.heuristic_failover_rounds
+                << " stopped_by_round_limit="
+                << (output.stopped_by_round_limit ? "yes" : "no");
+        emit_progress(options, message.str());
+    }
+    return output;
 }
 
 std::ostream& operator<<(std::ostream& out, const Endpoint& endpoint) {

@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -55,14 +56,14 @@ void append_component_counts(
 }
 
 std::string result_to_json(
-    const pdcode_simplify::SimplificationResult& result,
+    const pdcode_simplify::ReductionResult& result,
     const pdcode_simplify::ComponentAnalysis& input_components,
-    const pdcode_simplify::ComponentAnalysis* after_removal_components,
-    const pdcode_simplify::PDSimplificationResult& pd_simplification,
-    const pdcode_simplify::ComponentAnalysis& search_components) {
+    const pdcode_simplify::ComponentAnalysis& final_components,
+    const pdcode_simplify::ComponentAnalysis* after_removal_components) {
     std::ostringstream out;
     out << "{";
-    out << "\"simplification_found\":" << (result.found ? "true" : "false") << ",";
+    out << "\"simplification_found\":"
+        << (result.mid_simplification_rounds > 0 ? "true" : "false") << ",";
     out << "\"input_components\":{";
     append_component_counts(out, input_components);
     out << "},";
@@ -71,50 +72,21 @@ std::string result_to_json(
         append_component_counts(out, *after_removal_components);
         out << "},";
     }
-    out << "\"pd_simplification\":{"
-        << "\"enabled\":true,"
-        << "\"reidemeister_i_moves\":" << pd_simplification.reidemeister_i_moves << ","
-        << "\"nugatory_crossing_moves\":" << pd_simplification.nugatory_crossing_moves << ","
-        << "\"output_crossings\":" << pd_simplification.code.size()
-        << "},";
-    out << "\"search_components\":{";
-    append_component_counts(out, search_components);
+    out << "\"final_pd_code\":\"" << json_escape(pdcode_simplify::format_pd_code(result.code))
+        << "\",";
+    out << "\"final_crossings\":" << result.code.size() << ",";
+    out << "\"final_components\":{";
+    append_component_counts(out, final_components);
     out << "},";
+    out << "\"mid_simplification_rounds\":" << result.mid_simplification_rounds << ",";
+    out << "\"heuristic_failover_rounds\":" << result.heuristic_failover_rounds << ",";
+    out << "\"reidemeister_i_moves\":" << result.reidemeister_i_moves << ",";
+    out << "\"nugatory_crossing_moves\":" << result.nugatory_crossing_moves << ",";
     out << "\"tested_red_paths\":" << result.tested_red_paths << ",";
     out << "\"tested_green_paths\":" << result.tested_green_paths << ",";
-    out << "\"path_search_mode\":\"" << json_escape(result.path_search_mode) << "\"";
-    if (result.found) {
-        out << ",";
-        out << "\"direction\":\"" << pdcode_simplify::format_direction(result.direction) << "\",";
-        out << "\"red_path\":[";
-        for (std::size_t i = 0; i < result.red_path.size(); ++i) {
-            if (i != 0) {
-                out << ",";
-            }
-            out << "{\"crossing\":" << result.red_path[i].crossing
-                << ",\"strand\":" << result.red_path[i].strand << "}";
-        }
-        out << "],";
-        out << "\"green_path\":[";
-        for (std::size_t i = 0; i < result.green_path.size(); ++i) {
-            if (i != 0) {
-                out << ",";
-            }
-            out << result.green_path[i];
-        }
-        out << "],";
-        out << "\"green_crossings\":[";
-        for (std::size_t i = 0; i < result.green_crossings.size(); ++i) {
-            if (i != 0) {
-                out << ",";
-            }
-            const auto& crossing = result.green_crossings[i];
-            out << "{\"from_face\":" << crossing.from_face
-                << ",\"to_face\":" << crossing.to_face
-                << ",\"strand_level\":\"" << json_escape(crossing.strand_level) << "\"}";
-        }
-        out << "]";
-    }
+    out << "\"last_path_search_mode\":\"" << json_escape(result.last_path_search_mode) << "\",";
+    out << "\"stopped_by_round_limit\":"
+        << (result.stopped_by_round_limit ? "true" : "false");
     out << "}";
     return out.str();
 }
@@ -139,6 +111,8 @@ char* pdcode_simplify_run_json(
     const char* pd_text,
     int max_paths,
     int ban_heuristic,
+    int reduction_round,
+    int verbose,
     unsigned long long known_crossingless_components,
     const int* removed_crossings,
     unsigned long long removed_crossing_count) {
@@ -151,6 +125,10 @@ char* pdcode_simplify_run_json(
         pdcode_simplify::SimplifierOptions options;
         options.max_paths = max_paths;
         options.ban_heuristic = ban_heuristic != 0;
+        options.verbose = verbose != 0;
+        options.progress = [](const std::string& message) {
+            std::cerr << "[pdcode-simplify] " << message << '\n';
+        };
 
         const pdcode_simplify::PDCode code = pdcode_simplify::parse_pd_code(text);
         std::size_t crossingless = static_cast<std::size_t>(known_crossingless_components);
@@ -170,17 +148,15 @@ char* pdcode_simplify_run_json(
                     code, removed, crossingless);
         }
 
-        const auto pd_simplification = pdcode_simplify::simplify_pd_code(code, crossingless);
-        const auto search_components = pdcode_simplify::analyze_components(
-            pd_simplification.code,
-            pd_simplification.crossingless_components);
-        const auto result = pdcode_simplify::find_simplification(pd_simplification.code, options);
+        const auto result =
+            pdcode_simplify::reduce_pd_code(code, crossingless, options, reduction_round);
+        const auto final_components =
+            pdcode_simplify::analyze_components(result.code, result.crossingless_components);
         return copy_string(result_to_json(
             result,
             input_components,
-            has_removal ? &after_removal_components : nullptr,
-            pd_simplification,
-            search_components));
+            final_components,
+            has_removal ? &after_removal_components : nullptr));
     } catch (const std::exception& error) {
         return copy_string(std::string("{\"error\":\"") + json_escape(error.what()) + "\"}");
     } catch (...) {

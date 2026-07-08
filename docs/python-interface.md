@@ -45,13 +45,16 @@ import cpp_pd_code_simplify_interface as simplify
 result = simplify.simplify(
     "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]",
     max_paths=-1,
+    reduction_round=-1,
 )
-print(result["simplification_found"])
+print(result["final_pd_code"])
 ```
 
 `max_paths=-1` is the default and enables deterministic heuristic green-path
 sampling in the C++ backend. Pass `ban_heuristic=True` to request exhaustive
-green-path enumeration for the same input.
+green-path enumeration for the same input. `reduction_round=-1` is the
+default and applies mid-simplification witnesses until stable. Pass
+`verbose=True` to forward C++ progress logs to stderr.
 
 Batch use:
 
@@ -71,7 +74,7 @@ python -m cpp_pd_code_simplify_interface "PD[]"
 Batch command-line use:
 
 ```sh
-python -m cpp_pd_code_simplify_interface --pd-file inputs.pd --max-paths -1
+python -m cpp_pd_code_simplify_interface --pd-file inputs.pd --max-paths -1 --verbose
 ```
 
 The input file may contain one PD code per line. Optional `label: PD[...]`

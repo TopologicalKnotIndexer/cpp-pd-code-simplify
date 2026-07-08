@@ -100,37 +100,69 @@ def maybe_add_ban(command: List[str], ban_heuristic: bool) -> List[str]:
     return command + (["--ban-heuristic"] if ban_heuristic else [])
 
 
-def run_cpp_batch(cpp_exe: str, pd_file: str, max_paths: int, ban_heuristic: bool) -> List[Dict[str, object]]:
+def run_cpp_batch(
+    cpp_exe: str,
+    pd_file: str,
+    max_paths: int,
+    ban_heuristic: bool,
+    reduction_round: int,
+    verbose: bool,
+) -> List[Dict[str, object]]:
+    command = [
+        cpp_exe,
+        "--json",
+        "--pd-file",
+        pd_file,
+        "--max-paths",
+        str(max_paths),
+        "--reduction-round",
+        str(reduction_round),
+    ]
+    if verbose:
+        command.append("--verbose")
     proc = subprocess.run(
-        maybe_add_ban([cpp_exe, "--json", "--pd-file", pd_file, "--max-paths", str(max_paths)], ban_heuristic),
+        maybe_add_ban(command, ban_heuristic),
         cwd=str(ROOT),
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=None if verbose else subprocess.PIPE,
     )
     if proc.returncode not in (0, 1):
-        raise RuntimeError(f"C++ run failed ({proc.returncode}): {proc.stderr.strip()}")
+        stderr = proc.stderr.strip() if proc.stderr else ""
+        raise RuntimeError(f"C++ run failed ({proc.returncode}): {stderr}")
     return as_list(json.loads(proc.stdout))
 
 
-def run_python_cli_batch(pd_file: str, max_paths: int, ban_heuristic: bool) -> List[Dict[str, object]]:
+def run_python_cli_batch(
+    pd_file: str,
+    max_paths: int,
+    ban_heuristic: bool,
+    reduction_round: int,
+    verbose: bool,
+) -> List[Dict[str, object]]:
+    command = [
+        sys.executable,
+        str(ROOT / "mid_simplify_v5.py"),
+        "--json",
+        "--pd-file",
+        pd_file,
+        "--max-paths",
+        str(max_paths),
+        "--reduction-round",
+        str(reduction_round),
+    ]
+    if verbose:
+        command.append("--verbose")
     proc = subprocess.run(
-        maybe_add_ban([
-            sys.executable,
-            str(ROOT / "mid_simplify_v5.py"),
-            "--json",
-            "--pd-file",
-            pd_file,
-            "--max-paths",
-            str(max_paths),
-        ], ban_heuristic),
+        maybe_add_ban(command, ban_heuristic),
         cwd=str(ROOT),
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=None if verbose else subprocess.PIPE,
     )
     if proc.returncode not in (0, 1):
-        raise RuntimeError(f"Python run failed ({proc.returncode}): {proc.stderr.strip()}")
+        stderr = proc.stderr.strip() if proc.stderr else ""
+        raise RuntimeError(f"Python run failed ({proc.returncode}): {stderr}")
     return as_list(json.loads(proc.stdout))
 
 
@@ -149,27 +181,35 @@ def run_interface_batch(
     pd_file: str,
     max_paths: int,
     ban_heuristic: bool,
+    reduction_round: int,
     interface_cxx: str | None,
+    verbose: bool,
 ) -> List[Dict[str, object]]:
+    command = [
+        sys.executable,
+        "-m",
+        "cpp_pd_code_simplify_interface",
+        "--pd-file",
+        pd_file,
+        "--max-paths",
+        str(max_paths),
+        "--reduction-round",
+        str(reduction_round),
+    ]
+    if verbose:
+        command.append("--verbose")
     proc = subprocess.run(
-        maybe_add_ban([
-            sys.executable,
-            "-m",
-            "cpp_pd_code_simplify_interface",
-            "--pd-file",
-            pd_file,
-            "--max-paths",
-            str(max_paths),
-        ], ban_heuristic),
+        maybe_add_ban(command, ban_heuristic),
         cwd=str(ROOT),
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=None if verbose else subprocess.PIPE,
         env=interface_env(interface_cxx),
     )
     if proc.returncode not in (0, 1):
+        stderr = proc.stderr.strip() if proc.stderr else ""
         raise RuntimeError(
-            f"Interface run failed ({proc.returncode}): {proc.stderr.strip()}\n{proc.stdout}"
+            f"Interface run failed ({proc.returncode}): {stderr}\n{proc.stdout}"
         )
     return as_list(json.loads(proc.stdout))
 
@@ -183,6 +223,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cpp-exe", default=None, help="path to pd_simplify executable")
     parser.add_argument("--max-paths", type=int, default=-1)
     parser.add_argument("--ban-heuristic", action="store_true")
+    parser.add_argument("--reduction-round", type=int, default=-1)
+    parser.add_argument("--verbose", action="store_true", help="forward progress logs from child processes")
     parser.add_argument("--include-reference", action="store_true", help="include the 31-crossing reference case")
     parser.add_argument("--include-benchmark", action="store_true", help="include the deterministic benchmark dataset")
     parser.add_argument("--suite", choices=sorted(SUITES), default="all")
@@ -199,11 +241,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         cpp_results = [
             canonical(item)
-            for item in run_cpp_batch(cpp_exe, pd_file, args.max_paths, args.ban_heuristic)
+            for item in run_cpp_batch(
+                cpp_exe,
+                pd_file,
+                args.max_paths,
+                args.ban_heuristic,
+                args.reduction_round,
+                args.verbose,
+            )
         ]
         py_results = [
             canonical(item)
-            for item in run_python_cli_batch(pd_file, args.max_paths, args.ban_heuristic)
+            for item in run_python_cli_batch(
+                pd_file,
+                args.max_paths,
+                args.ban_heuristic,
+                args.reduction_round,
+                args.verbose,
+            )
         ]
         interface_results = None
         if args.include_interface:
@@ -213,7 +268,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     pd_file,
                     args.max_paths,
                     args.ban_heuristic,
+                    args.reduction_round,
                     args.interface_cxx,
+                    args.verbose,
                 )
             ]
     finally:

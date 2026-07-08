@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <functional>
 #include <iosfwd>
 #include <string>
 #include <vector>
@@ -50,6 +51,9 @@ struct GreenCrossing {
 struct SimplifierOptions {
     int max_paths = -1;
     bool ban_heuristic = false;
+    bool require_applicable = false;
+    bool verbose = false;
+    std::function<void(const std::string&)> progress;
 };
 
 struct LinkComponentSummary {
@@ -107,6 +111,24 @@ struct SimplificationResult {
     std::size_t tested_green_paths = 0;
 };
 
+struct MidSimplificationApplyResult {
+    PDCode code;
+    std::size_t crossingless_components = 0;
+};
+
+struct ReductionResult {
+    PDCode code;
+    std::size_t crossingless_components = 0;
+    int mid_simplification_rounds = 0;
+    int heuristic_failover_rounds = 0;
+    int reidemeister_i_moves = 0;
+    int nugatory_crossing_moves = 0;
+    std::size_t tested_red_paths = 0;
+    std::size_t tested_green_paths = 0;
+    std::string last_path_search_mode;
+    bool stopped_by_round_limit = false;
+};
+
 PDCODE_SIMPLIFY_API PDCode parse_pd_code(const std::string& text);
 PDCODE_SIMPLIFY_API std::string format_pd_code(const PDCode& code);
 PDCODE_SIMPLIFY_API std::string format_endpoint(const Endpoint& endpoint);
@@ -141,6 +163,17 @@ PDCODE_SIMPLIFY_API PDSimplificationResult simplify_pd_code(
 PDCODE_SIMPLIFY_API SimplificationResult find_simplification(
     const PDCode& code,
     const SimplifierOptions& options = SimplifierOptions{});
+
+PDCODE_SIMPLIFY_API MidSimplificationApplyResult apply_simplification_witness(
+    const PDCode& code,
+    const SimplificationResult& result,
+    std::size_t known_crossingless_components = 0);
+
+PDCODE_SIMPLIFY_API ReductionResult reduce_pd_code(
+    const PDCode& code,
+    std::size_t known_crossingless_components = 0,
+    const SimplifierOptions& options = SimplifierOptions{},
+    int reduction_round = -1);
 
 PDCODE_SIMPLIFY_API std::ostream& operator<<(std::ostream& out, const Endpoint& endpoint);
 

@@ -15,7 +15,7 @@ use, the package compiles a cached local dynamic library through
 compiler compatible with `g++` must be available at runtime.
 
 Calls use the C++ library's default preprocessing pipeline: R1-move removal
-followed by nugatory-crossing removal.
+followed by nugatory-crossing removal, then iterative mid-simplification.
 
 ## Example
 
@@ -24,12 +24,14 @@ import cpp_pd_code_simplify_interface as simplify
 
 pd_code = "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]"
 result = simplify.simplify(pd_code)
-print(result["simplification_found"])
+print(result["final_pd_code"])
 ```
 
 The default `max_paths=-1` uses deterministic heuristic green-path sampling in
 the C++ backend. Use `ban_heuristic=True` to request exhaustive green-path
-enumeration for a manageable input.
+enumeration for a manageable input. Use `reduction_round=K` to cap applied
+mid-simplification rounds; the default `-1` runs until stable. Use
+`verbose=True` to forward C++ progress logs to stderr.
 
 Batch use:
 
@@ -56,7 +58,7 @@ Python process needs a 64-bit compiler target.
 Command-line use also supports multi-line PD-code files:
 
 ```sh
-python -m cpp_pd_code_simplify_interface --pd-file inputs.pd --max-paths -1
+python -m cpp_pd_code_simplify_interface --pd-file inputs.pd --max-paths -1 --verbose
 ```
 
 ## Build And Publish

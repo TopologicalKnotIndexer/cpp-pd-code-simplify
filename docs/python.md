@@ -26,6 +26,12 @@ Run one PD code:
 python mid_simplify_v5.py --pd-code "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]"
 ```
 
+Use `--json` for structured output containing `final_pd_code` and
+`final_crossings`. Use `--reduction-round K` to cap applied
+mid-simplification rounds; the default `-1` runs until stable, with a
+brute-force check when heuristic mode can no longer find a path. Use
+`--verbose` to print progress logs to stderr.
+
 Report crossingless components after removing all trefoil crossings:
 
 ```sh
@@ -38,14 +44,14 @@ python mid_simplify_v5.py --remove-crossings 0,1,2 --pd-code "PD[X[1,5,2,4],X[3,
 import mid_simplify_v5 as simplify
 
 code = simplify.parse_pd_code("PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]")
-prepared = simplify.simplify_pd_code(code)
-result = simplify.find_simplification(prepared.code)
-print(result.found)
+result = simplify.reduce_pd_code(code, reduction_round=-1)
+print(simplify.format_pd_code(result.code))
 ```
 
 `find_simplification` defaults to `max_paths=-1`, which uses deterministic
 heuristic green-path sampling. Pass `ban_heuristic=True` with `max_paths=-1`
-to enumerate all green paths for a manageable input.
+to enumerate all green paths for a manageable input. `reduce_pd_code` is the
+high-level API that applies witnesses and returns the final PD code.
 
 Component accounting is available directly:
 

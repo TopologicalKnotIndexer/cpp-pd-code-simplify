@@ -13,10 +13,10 @@ The simplifier has three green-path search modes:
 | `max_paths == -1` | `heuristic` | Use deterministic priority sampling with fixed budgets. This is the default. |
 | `max_paths == -1` plus `--ban-heuristic` | `bruteforce` | Enumerate all eligible simple green paths for each red path. |
 
-The command-line JSON field `path_search_mode` records the mode used for a
-run. The Python prototype and the C++ implementation use the same mode names,
-constants, ordering rules, and tie-breaking rules. The Python C++ interface
-calls the C++ backend directly.
+The command-line JSON field `last_path_search_mode` records the last search
+mode used by the reduction loop. The Python prototype and the C++
+implementation use the same mode names, constants, ordering rules, and
+tie-breaking rules. The Python C++ interface calls the C++ backend directly.
 
 ## Motivation
 
@@ -101,15 +101,16 @@ complete: it can miss a witness that brute-force mode would find if the witness
 falls outside the sampled frontier. Use `--ban-heuristic --max-paths -1` when
 complete enumeration is required for a manageable input.
 
-The C++-only benchmark in `tools/benchmark_cpp_heuristic.py` compares heuristic
-mode with brute-force mode on the ten large random benchmark diagrams. It
-reports both runtime and crossing-reduction potential. Because the current CLI
-finds a witness rather than rewriting the diagram by that witness, the
-reduction metric is:
+The C++-only benchmark in `tools/benchmark_cpp_heuristic.py` compares
+heuristic mode with brute-force mode on the ten large random benchmark
+diagrams. It reports both runtime and actual crossing reduction after applying
+the configured number of reduction rounds. The reduction metric is:
 
 ```text
-original crossings - preprocessed crossings
-  + max(0, len(red_path) - len(green_path)) when a witness is found
+original crossings - final crossings
 ```
 
-The result is divided by the original crossing count.
+The result is divided by the original crossing count. The committed large-case
+chart uses a three-round cap and a timeout budget for brute-force runs, because
+full terminal brute-force stability proofs can dominate runtime on
+120-150-crossing diagrams.

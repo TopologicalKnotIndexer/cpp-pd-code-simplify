@@ -68,12 +68,14 @@ green path from simply crossing the red boundary through its interior. The
 remaining dual graph is searched for simple paths with total weight less
 than the red path length.
 
-When `max_paths` is not `-1`, the implementation uses the original bounded
-depth-first collector. When `max_paths` is `-1`, the default collector is the
-shared C++/Python deterministic heuristic described in
+When `max_paths` is not `-1`, the implementation uses the bounded depth-first
+collector. When `max_paths` is `-1`, the default collector is the shared
+C++/Python deterministic heuristic described in
 [Heuristic Path Sampling](heuristic-path-sampling.md). Passing
 `--ban-heuristic` with `max_paths=-1` restores exhaustive simple-path
-enumeration for the current red path.
+enumeration for the current red path. The exhaustive collector is still exact,
+but it prunes branches whose current weight plus the shortest possible
+remaining dual-graph distance is already too large to beat the red path.
 
 ## Green Path Validation
 
@@ -97,6 +99,29 @@ the disk:
 If propagation completes with no contradiction, the red and green paths
 bound a valid simplifying disk. The result records the red path, the green
 path, the side used, and the green crossing data.
+
+## Applying A Witness
+
+The high-level simplifier does not stop at the witness. It applies the
+witness to produce a new PD code:
+
+- crossings on the deleted red arc are removed;
+- the non-red strand through each removed crossing is smoothed;
+- every edge crossed by the green path is split;
+- new crossings are inserted along the green path with the over/under levels
+  computed by the validator;
+- the resulting half-edge pairing is checked so every active PD label has
+  exactly two ends, then labels are renumbered deterministically.
+
+After applying one witness, the implementation immediately runs the same R1
+and nugatory preprocessing again. This can expose additional local
+simplifications before the next mid-simplification search round.
+
+`--reduction-round K` caps the number of applied mid-simplification rounds.
+The default `--reduction-round -1` repeats until no applicable witness remains.
+In default heuristic mode, if the heuristic cannot find a witness, the
+simplifier runs a brute-force pass. If brute force finds a witness, the loop
+continues; if not, the current PD code is reported as the final result.
 
 ## Component Accounting
 
@@ -138,9 +163,11 @@ For a fixed red path, any valid simplifying disk must have its other
 boundary arc in the complement of the red interior. Assigning large weights
 to interior red dual edges excludes paths that cross through that boundary.
 In brute-force mode, the simple-path search over the dual graph therefore
-enumerates exactly the eligible green arcs. In bounded and heuristic modes,
-the search is intentionally incomplete, but every candidate that reaches the
-validator is checked by the same crossing-consistency rules.
+enumerates exactly the eligible green arcs; shortest-distance pruning only
+removes branches that cannot possibly satisfy the strict weight cutoff. In
+bounded and heuristic modes, the search is intentionally incomplete, but every
+candidate that reaches the validator is checked by the same
+crossing-consistency rules.
 
 The validation step is sound because it checks the local crossing
 constraints induced by the disk. A contradiction means some strand would be
@@ -148,6 +175,13 @@ forced to be both over and under, or two ends of the same diagram edge would
 receive inconsistent levels. If no contradiction is found, all strands met
 by the disk boundary admit a consistent over/under assignment, so the
 reported red and green paths describe a valid simplifying witness.
+
+The application step is sound at the PD-code level because it rewires the
+diagram only along the certified disk boundary. The implementation rejects a
+witness if the green path would cross a deleted red-strand half-edge, if a
+crossed PD label would be split twice, or if the reconstructed active
+half-edge graph cannot be paired into valid PD labels. The final renumbering
+changes only labels, not the underlying diagram.
 
 Heuristic mode does not change this soundness argument because it only changes
 candidate ordering and sampling. It can miss a witness; it cannot make an

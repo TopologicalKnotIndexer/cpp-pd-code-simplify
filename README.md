@@ -1,9 +1,10 @@
 # cpp-pd-code-simplify
 
-A dependency-free C++14 project for finding mid-simplification witnesses in
-knot and link planar diagram codes. The repository also includes a refactored
-Python prototype for differential testing. User-facing tools first remove R1
-moves and nugatory crossings, then run the mid-simplification search.
+A dependency-free C++14 project for simplifying knot and link planar diagram
+codes. The repository also includes a refactored Python prototype for
+differential testing. User-facing tools first remove R1 moves and nugatory
+crossings, then iteratively find and apply mid-simplification moves until the
+configured round limit is reached or no further move is found.
 
 ## Quickstart
 
@@ -20,6 +21,9 @@ Run one PD code:
 ```
 
 On Windows, use `.\build\bin\pd_simplify.exe` for the executable path.
+Add `--json` to get machine-readable output with `final_pd_code` and
+`final_crossings`. Add `--verbose` to print progress logs to stderr, including
+the current reduction round and crossing count.
 
 Create a redistributable package with the CLI, shared library, headers, and
 documentation:
@@ -48,7 +52,7 @@ compiler must be available. From Python:
 import cpp_pd_code_simplify_interface as simplify
 
 result = simplify.simplify("PD[]")
-print(result["input_components"]["total_components"])
+print(result["final_pd_code"])
 ```
 
 Run C++/Python differential tests:
@@ -77,7 +81,10 @@ C++ heuristic versus brute-force search on the zip-random large cases:
 ![C++ heuristic versus brute-force green-path search](docs/assets/heuristic_vs_bruteforce_random.png)
 
 This local run uses the deterministic benchmark set documented in
-[Benchmarking](docs/benchmarking.md).
+[Benchmarking](docs/benchmarking.md). The lightweight suite is measured with
+strict `--reduction-round -1`; the large zip-random throughput chart uses
+`--reduction-round 3` because terminal brute-force stability proofs can be
+very expensive on 120-150 crossing diagrams.
 
 ## Documentation
 

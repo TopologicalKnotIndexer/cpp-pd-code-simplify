@@ -16,7 +16,7 @@ import sys
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Deque, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Deque, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 PDCode = List[Tuple[int, int, int, int]]
@@ -125,6 +125,54 @@ class SimplificationResult:
             data["green_crossings"] = [
                 crossing.to_json() for crossing in self.green_crossings
             ]
+        return data
+
+
+@dataclass
+class ReductionResult:
+    code: PDCode
+    crossingless_components: int = 0
+    mid_simplification_rounds: int = 0
+    heuristic_failover_rounds: int = 0
+    reidemeister_i_moves: int = 0
+    nugatory_crossing_moves: int = 0
+    tested_red_paths: int = 0
+    tested_green_paths: int = 0
+    last_path_search_mode: str = ""
+    stopped_by_round_limit: bool = False
+
+    def to_json(
+        self,
+        input_components: Optional[ComponentAnalysis] = None,
+        after_removal_components: Optional[ComponentAnalysis] = None,
+        final_components: Optional[ComponentAnalysis] = None,
+        label: Optional[str] = None,
+    ) -> Dict[str, object]:
+        data: Dict[str, object] = {}
+        if label is not None:
+            data["label"] = label
+        data["simplification_found"] = self.mid_simplification_rounds > 0
+        if input_components is not None:
+            data["input_components"] = input_components.to_json()
+        if after_removal_components is not None:
+            data["after_removal_components"] = after_removal_components.to_json()
+        data.update({
+            "final_pd_code": format_pd_code(self.code),
+            "final_crossings": len(self.code),
+            "final_components": (
+                final_components.to_json()
+                if final_components is not None
+                else analyze_components(self.code, self.crossingless_components).to_json()
+            ),
+            "mid_simplification_rounds": self.mid_simplification_rounds,
+            "heuristic_failover_rounds": self.heuristic_failover_rounds,
+            "reidemeister_i_moves": self.reidemeister_i_moves,
+            "nugatory_crossing_moves": self.nugatory_crossing_moves,
+            "tested_red_paths": self.tested_red_paths,
+            "tested_green_paths": self.tested_green_paths,
+            "last_path_search_mode": self.last_path_search_mode,
+            "stopped_by_round_limit": self.stopped_by_round_limit,
+        })
         return data
 
 
@@ -815,35 +863,44 @@ def collect_simple_paths(
     paths: List[List[int]] = []
     visited = [False for _ in graph.faces]
     current_path = [source]
+    distance = heuristic_distances_to_target(graph, target, cutoff)
     visited[source] = True
 
-    def dfs(current: int) -> None:
+    def dfs(current: int, current_weight: int) -> None:
         if len(current_path) - 1 >= cutoff:
+            return
+        if (
+            current < 0
+            or current >= len(distance)
+            or distance[current] >= 10**9
+            or current_weight + distance[current] >= cutoff
+        ):
             return
         for edge_index in graph.adjacency[current]:
             edge = graph.edges[edge_index]
             nxt = edge.v if edge.u == current else edge.u
             if visited[nxt]:
                 continue
+            next_weight = current_weight + edge.weight
+            if next_weight >= cutoff:
+                continue
+            if (
+                nxt < 0
+                or nxt >= len(distance)
+                or distance[nxt] >= 10**9
+                or next_weight + distance[nxt] >= cutoff
+            ):
+                continue
             current_path.append(nxt)
             visited[nxt] = True
             if nxt == target:
-                path_weight = 0
-                for i in range(len(current_path) - 1):
-                    path_edge = graph.edge(current_path[i], current_path[i + 1])
-                    if path_edge is None:
-                        raise RuntimeError("Missing dual edge while weighing a path")
-                    path_weight += path_edge.weight
-                    if path_weight >= cutoff:
-                        break
-                if path_weight < cutoff:
-                    paths.append(list(current_path))
+                paths.append(list(current_path))
                 if max_paths != -1 and len(paths) > max_paths:
                     visited[nxt] = False
                     current_path.pop()
                     return
             else:
-                dfs(nxt)
+                dfs(nxt, next_weight)
                 if max_paths != -1 and len(paths) > max_paths:
                     visited[nxt] = False
                     current_path.pop()
@@ -851,7 +908,7 @@ def collect_simple_paths(
             visited[nxt] = False
             current_path.pop()
 
-    dfs(source)
+    dfs(source, 0)
     return paths
 
 
@@ -1136,10 +1193,61 @@ def do_check(
     return True
 
 
+def witness_has_applicable_surgery(code: PDCode, result: SimplificationResult) -> bool:
+    if not result.found or len(result.red_path) < 2:
+        return False
+    try:
+        diagram = Diagram(code)
+        graph = DualGraph(diagram)
+    except Exception:
+        return False
+    removed_crossings = {endpoint.crossing for endpoint in result.red_path[:-1]}
+    if len(removed_crossings) != len(result.red_path) - 1:
+        return False
+    if result.red_path[-1].crossing in removed_crossings:
+        return False
+    red_entry_by_crossing = {
+        endpoint.crossing: endpoint.strand for endpoint in result.red_path[:-1]
+    }
+    levels = {(crossing.from_face, crossing.to_face) for crossing in result.green_crossings}
+    crossed_labels: Set[int] = set()
+
+    def removed_red_node(node: int) -> bool:
+        crossing = node // 4
+        if crossing not in removed_crossings:
+            return False
+        strand = node % 4
+        red_strand = red_entry_by_crossing[crossing]
+        return strand == red_strand or strand == (red_strand + 2) % 4
+
+    for index in range(len(result.green_path) - 1):
+        from_face = result.green_path[index]
+        to_face = result.green_path[index + 1]
+        if (from_face, to_face) not in levels:
+            return False
+        edge = graph.edge(from_face, to_face)
+        if edge is None:
+            return False
+        interface_from = edge.interface_for_face(from_face)
+        interface_to = edge.interface_for_face(to_face)
+        if removed_red_node(interface_from) or removed_red_node(interface_to):
+            return False
+        label = code[interface_from // 4][interface_from % 4]
+        if label in crossed_labels:
+            return False
+        crossed_labels.add(label)
+    try:
+        apply_simplification_witness(code, result, 0)
+    except Exception:
+        return False
+    return True
+
+
 def find_simplification(
     code: PDCode,
     max_paths: int = -1,
     ban_heuristic: bool = False,
+    require_applicable: bool = False,
 ) -> SimplificationResult:
     result = SimplificationResult()
     if max_paths == -1 and not ban_heuristic:
@@ -1190,11 +1298,347 @@ def find_simplification(
             if len(green_path) >= len(red_path):
                 continue
             if do_check(diagram, graph, red_path, green_path, "left", result):
-                return result
+                if not require_applicable or witness_has_applicable_surgery(code, result):
+                    return result
+                result.found = False
             if do_check(diagram, graph, red_path, green_path, "right", result):
-                return result
+                if not require_applicable or witness_has_applicable_surgery(code, result):
+                    return result
+                result.found = False
 
     return result
+
+
+class DisjointSet:
+    def __init__(self) -> None:
+        self.parent: Dict[int, int] = {}
+
+    def find(self, value: int) -> int:
+        parent = self.parent.setdefault(value, value)
+        if parent != value:
+            parent = self.find(parent)
+            self.parent[value] = parent
+        return parent
+
+    def union(self, first: int, second: int) -> None:
+        first_root = self.find(first)
+        second_root = self.find(second)
+        if first_root == second_root:
+            return
+        if second_root < first_root:
+            first_root, second_root = second_root, first_root
+        self.parent[second_root] = first_root
+
+
+def green_crossing_levels(result: SimplificationResult) -> Dict[Tuple[int, int], str]:
+    levels: Dict[Tuple[int, int], str] = {}
+    for crossing in result.green_crossings:
+        levels[(crossing.from_face, crossing.to_face)] = crossing.strand_level
+    return levels
+
+
+def apply_simplification_witness(
+    code: PDCode,
+    result: SimplificationResult,
+    known_crossingless_components: int = 0,
+) -> Tuple[PDCode, int]:
+    if not result.found:
+        raise ValueError("Cannot apply a missing simplification witness")
+    if len(result.red_path) < 2:
+        raise ValueError("Simplification witness red path is too short")
+
+    diagram = Diagram(code)
+    graph = DualGraph(diagram)
+    removed_crossings = {endpoint.crossing for endpoint in result.red_path[:-1]}
+    if len(removed_crossings) != len(result.red_path) - 1:
+        raise ValueError("Simplification witness repeats a removed red crossing")
+    if result.red_path[-1].crossing in removed_crossings:
+        raise ValueError("Simplification witness ends inside the removed red arc")
+
+    red_entry_by_crossing = {
+        endpoint.crossing: endpoint.strand for endpoint in result.red_path[:-1]
+    }
+    levels = green_crossing_levels(result)
+    dsu = DisjointSet()
+    endpoint_count = len(code) * 4
+    new_crossing_count = max(0, len(result.green_path) - 1)
+    new_base = endpoint_count
+
+    def new_node(crossing_index: int, strand: int) -> int:
+        return new_base + crossing_index * 4 + strand
+
+    def is_removed_node(node: int) -> bool:
+        return node < endpoint_count and (node // 4) in removed_crossings
+
+    def is_removed_red_node(node: int) -> bool:
+        if not is_removed_node(node):
+            return False
+        crossing = node // 4
+        strand = node % 4
+        red_strand = red_entry_by_crossing[crossing]
+        return strand == red_strand or strand == (red_strand + 2) % 4
+
+    crossed_labels: Set[int] = set()
+    crossed_edges: List[Tuple[int, int, str]] = []
+    for index in range(new_crossing_count):
+        from_face = result.green_path[index]
+        to_face = result.green_path[index + 1]
+        edge = graph.edge(from_face, to_face)
+        if edge is None:
+            raise ValueError("Simplification witness green path crosses a missing dual edge")
+        interface_from = edge.interface_for_face(from_face)
+        interface_to = edge.interface_for_face(to_face)
+        if is_removed_red_node(interface_from) or is_removed_red_node(interface_to):
+            raise ValueError("Simplification witness crosses an edge removed with the red arc")
+        label = code[interface_from // 4][interface_from % 4]
+        if label in crossed_labels:
+            raise ValueError("Simplification witness crosses the same PD edge more than once")
+        crossed_labels.add(label)
+        level = levels.get((from_face, to_face))
+        if level is None:
+            raise ValueError("Simplification witness is missing a green crossing level")
+        crossed_edges.append((interface_from, interface_to, level))
+
+    label_endpoints: Dict[int, List[int]] = {}
+    for crossing_index, crossing in enumerate(code):
+        for strand, label in enumerate(crossing):
+            label_endpoints.setdefault(label, []).append(crossing_index * 4 + strand)
+    for label, endpoints in label_endpoints.items():
+        if len(endpoints) != 2:
+            raise ValueError(f"PD label {label} appears {len(endpoints)} times")
+        if label not in crossed_labels:
+            dsu.union(endpoints[0], endpoints[1])
+
+    for crossing, strand in red_entry_by_crossing.items():
+        dsu.union(crossing * 4 + ((strand + 1) % 4), crossing * 4 + ((strand + 3) % 4))
+
+    green_anchor = result.red_path[0].key
+    for index, (interface_from, interface_to, level) in enumerate(crossed_edges):
+        if level == "over":
+            existing_from_pos = 0
+            green_in_pos = 1
+            existing_to_pos = 2
+            green_out_pos = 3
+        elif level == "under":
+            green_in_pos = 0
+            existing_to_pos = 1
+            green_out_pos = 2
+            existing_from_pos = 3
+        else:
+            raise ValueError(f"Unknown green crossing strand level: {level!r}")
+
+        dsu.union(interface_from, new_node(index, existing_from_pos))
+        dsu.union(interface_to, new_node(index, existing_to_pos))
+        dsu.union(green_anchor, new_node(index, green_in_pos))
+        green_anchor = new_node(index, green_out_pos)
+
+    dsu.union(green_anchor, result.red_path[-1].key)
+
+    active_nodes: List[int] = [
+        node for node in range(endpoint_count) if not is_removed_node(node)
+    ]
+    for index in range(new_crossing_count):
+        active_nodes.extend(new_node(index, strand) for strand in range(4))
+
+    grouped: Dict[int, List[int]] = {}
+    for node in active_nodes:
+        grouped.setdefault(dsu.find(node), []).append(node)
+
+    label_by_node: Dict[int, int] = {}
+    for new_label, nodes in enumerate(sorted(grouped.values(), key=lambda item: min(item))):
+        if len(nodes) != 2:
+            raise ValueError(
+                "Applied simplification produced a non-PD edge with "
+                f"{len(nodes)} active endpoints"
+            )
+        for node in nodes:
+            label_by_node[node] = new_label
+
+    output: PDCode = []
+    for crossing_index in range(len(code)):
+        if crossing_index in removed_crossings:
+            continue
+        crossing = tuple(label_by_node[crossing_index * 4 + strand] for strand in range(4))
+        output.append(crossing)  # type: ignore[arg-type]
+    for index in range(new_crossing_count):
+        crossing = tuple(label_by_node[new_node(index, strand)] for strand in range(4))
+        output.append(crossing)  # type: ignore[arg-type]
+
+    total_components = analyze_components(code, known_crossingless_components).total_components
+    output = renumber_full_dfs(output)
+    crossing_components = analyze_components(output).components_with_crossings if output else 0
+    crossingless_components = max(0, total_components - crossing_components)
+    return output, crossingless_components
+
+
+def _emit_progress(
+    verbose: bool,
+    progress: Optional[Callable[[str], None]],
+    message: str,
+) -> None:
+    if not verbose:
+        return
+    if progress is not None:
+        progress(message)
+
+
+def _search_mode(max_paths: int, ban_heuristic: bool) -> str:
+    if max_paths == -1 and not ban_heuristic:
+        return "heuristic"
+    if max_paths == -1:
+        return "bruteforce"
+    return "bounded"
+
+
+def reduce_pd_code(
+    code: PDCode,
+    known_crossingless_components: int = 0,
+    max_paths: int = -1,
+    ban_heuristic: bool = False,
+    reduction_round: int = -1,
+    verbose: bool = False,
+    progress: Optional[Callable[[str], None]] = None,
+) -> ReductionResult:
+    _emit_progress(
+        verbose,
+        progress,
+        (
+            f"start input_crossings={len(code)} "
+            f"known_crossingless_components={known_crossingless_components} "
+            f"reduction_round={reduction_round} max_paths={max_paths} "
+            f"heuristic={'off' if ban_heuristic else 'on'}"
+        ),
+    )
+    prepared = simplify_pd_code(code, known_crossingless_components)
+    output = ReductionResult(
+        code=prepared.code,
+        crossingless_components=prepared.crossingless_components,
+        reidemeister_i_moves=prepared.reidemeister_i_moves,
+        nugatory_crossing_moves=prepared.nugatory_crossing_moves,
+    )
+    _emit_progress(
+        verbose,
+        progress,
+        (
+            f"pre_simplify input_crossings={len(code)} "
+            f"output_crossings={len(output.code)} "
+            f"crossingless_components={output.crossingless_components} "
+            f"r1_moves={prepared.reidemeister_i_moves} "
+            f"nugatory_moves={prepared.nugatory_crossing_moves}"
+        ),
+    )
+
+    while reduction_round < 0 or output.mid_simplification_rounds < reduction_round:
+        round_index = output.mid_simplification_rounds + 1
+        _emit_progress(
+            verbose,
+            progress,
+            (
+                f"round {round_index} search_start crossings={len(output.code)} "
+                f"mode={_search_mode(max_paths, ban_heuristic)}"
+            ),
+        )
+        search = find_simplification(
+            output.code,
+            max_paths=max_paths,
+            ban_heuristic=ban_heuristic,
+            require_applicable=True,
+        )
+        output.tested_red_paths += search.tested_red_paths
+        output.tested_green_paths += search.tested_green_paths
+        output.last_path_search_mode = search.path_search_mode
+        _emit_progress(
+            verbose,
+            progress,
+            (
+                f"round {round_index} search_done found={'yes' if search.found else 'no'} "
+                f"mode={search.path_search_mode} "
+                f"tested_red={search.tested_red_paths} "
+                f"tested_green={search.tested_green_paths}"
+            ),
+        )
+
+        if (
+            not search.found
+            and reduction_round < 0
+            and max_paths == -1
+            and not ban_heuristic
+        ):
+            _emit_progress(
+                verbose,
+                progress,
+                f"round {round_index} brute_fallback_start crossings={len(output.code)}",
+            )
+            brute = find_simplification(
+                output.code,
+                max_paths=-1,
+                ban_heuristic=True,
+                require_applicable=True,
+            )
+            output.tested_red_paths += brute.tested_red_paths
+            output.tested_green_paths += brute.tested_green_paths
+            output.last_path_search_mode = brute.path_search_mode
+            _emit_progress(
+                verbose,
+                progress,
+                (
+                    f"round {round_index} brute_fallback_done "
+                    f"found={'yes' if brute.found else 'no'} "
+                    f"tested_red={brute.tested_red_paths} "
+                    f"tested_green={brute.tested_green_paths}"
+                ),
+            )
+            if brute.found:
+                output.heuristic_failover_rounds += 1
+                search = brute
+
+        if not search.found:
+            _emit_progress(
+                verbose,
+                progress,
+                f"round {round_index} stop_no_path crossings={len(output.code)}",
+            )
+            break
+
+        before_apply_crossings = len(output.code)
+        reduced_code, reduced_crossingless = apply_simplification_witness(
+            output.code,
+            search,
+            output.crossingless_components,
+        )
+        output.mid_simplification_rounds += 1
+        prepared = simplify_pd_code(reduced_code, reduced_crossingless)
+        output.code = prepared.code
+        output.crossingless_components = prepared.crossingless_components
+        output.reidemeister_i_moves += prepared.reidemeister_i_moves
+        output.nugatory_crossing_moves += prepared.nugatory_crossing_moves
+        _emit_progress(
+            verbose,
+            progress,
+            (
+                f"round {round_index} applied crossings={before_apply_crossings} "
+                f"-> {len(reduced_code)} -> {len(output.code)} "
+                f"crossingless_components={output.crossingless_components} "
+                f"r1_moves={prepared.reidemeister_i_moves} "
+                f"nugatory_moves={prepared.nugatory_crossing_moves}"
+            ),
+        )
+
+    output.stopped_by_round_limit = (
+        reduction_round >= 0 and output.mid_simplification_rounds >= reduction_round
+    )
+    _emit_progress(
+        verbose,
+        progress,
+        (
+            f"done final_crossings={len(output.code)} "
+            f"crossingless_components={output.crossingless_components} "
+            f"mid_rounds={output.mid_simplification_rounds} "
+            f"heuristic_failover_rounds={output.heuristic_failover_rounds} "
+            f"stopped_by_round_limit={'yes' if output.stopped_by_round_limit else 'no'}"
+        ),
+    )
+    return output
 
 
 def label_for_block(text: str, block_start: int, label_prefix: str, index: int) -> str:
@@ -1295,13 +1739,13 @@ def run_job(
     job: PDJob,
     max_paths: int = -1,
     ban_heuristic: bool = False,
+    reduction_round: int = -1,
     known_crossingless_components: int = 0,
     removed_crossings: Optional[Sequence[int]] = None,
+    verbose: bool = False,
 ) -> Tuple[
-    SimplificationResult,
+    ReductionResult,
     ComponentAnalysis,
-    Optional[ComponentAnalysis],
-    Optional[PDSimplificationResult],
     Optional[ComponentAnalysis],
 ]:
     if job.error:
@@ -1313,29 +1757,30 @@ def run_job(
         after_removal = analyze_components_after_removing_crossings(
             job.code, removed_crossings, crossingless
         )
-    pd_simplification = simplify_pd_code(job.code, crossingless)
-    search_code = pd_simplification.code
-    search_components = analyze_components(
-        search_code,
-        pd_simplification.crossingless_components,
-    )
     return (
-        find_simplification(search_code, max_paths, ban_heuristic),
+        reduce_pd_code(
+            job.code,
+            known_crossingless_components=crossingless,
+            max_paths=max_paths,
+            ban_heuristic=ban_heuristic,
+            reduction_round=reduction_round,
+            verbose=verbose,
+            progress=lambda message: print(
+                f"[pdcode-simplify] {job.label}: {message}", file=sys.stderr
+            ),
+        ),
         input_components,
         after_removal,
-        pd_simplification,
-        search_components,
     )
 
 
 def print_text_result(
-    result: SimplificationResult,
+    result: ReductionResult,
     input_components: ComponentAnalysis,
     after_removal_components: Optional[ComponentAnalysis] = None,
-    pd_simplification: Optional[PDSimplificationResult] = None,
-    search_components: Optional[ComponentAnalysis] = None,
 ) -> None:
-    print(f"simplification_found: {'yes' if result.found else 'no'}")
+    final_components = analyze_components(result.code, result.crossingless_components)
+    print(f"simplification_found: {'yes' if result.mid_simplification_rounds > 0 else 'no'}")
     print(f"input_components_with_crossings: {input_components.components_with_crossings}")
     print(f"input_crossingless_components: {input_components.crossingless_components}")
     print(f"input_total_components: {input_components.total_components}")
@@ -1349,42 +1794,24 @@ def print_text_result(
             f"{after_removal_components.crossingless_components}"
         )
         print(f"after_removal_total_components: {after_removal_components.total_components}")
-    if pd_simplification is not None and search_components is not None:
-        print("pd_simplification_enabled: yes")
-        print(
-            "pd_simplification_reidemeister_i_moves: "
-            f"{pd_simplification.reidemeister_i_moves}"
-        )
-        print(
-            "pd_simplification_nugatory_crossing_moves: "
-            f"{pd_simplification.nugatory_crossing_moves}"
-        )
-        print(f"pd_simplification_output_crossings: {len(pd_simplification.code)}")
-        print(
-            "search_components_with_crossings: "
-            f"{search_components.components_with_crossings}"
-        )
-        print(f"search_crossingless_components: {search_components.crossingless_components}")
-        print(f"search_total_components: {search_components.total_components}")
+    print(f"final_pd_code: {format_pd_code(result.code)}")
+    print(f"final_crossings: {len(result.code)}")
+    print(f"final_components_with_crossings: {final_components.components_with_crossings}")
+    print(f"final_crossingless_components: {final_components.crossingless_components}")
+    print(f"final_total_components: {final_components.total_components}")
+    print(f"mid_simplification_rounds: {result.mid_simplification_rounds}")
+    print(f"heuristic_failover_rounds: {result.heuristic_failover_rounds}")
+    print(f"reidemeister_i_moves: {result.reidemeister_i_moves}")
+    print(f"nugatory_crossing_moves: {result.nugatory_crossing_moves}")
     print(f"tested_red_paths: {result.tested_red_paths}")
     print(f"tested_green_paths: {result.tested_green_paths}")
-    print(f"path_search_mode: {result.path_search_mode}")
-    if not result.found:
-        return
-    red = ", ".join(f"({e.crossing}, {e.strand})" for e in result.red_path)
-    green_crossings = ", ".join(
-        f"({c.from_face}, {c.to_face}, {c.strand_level})"
-        for c in result.green_crossings
-    )
-    print(f"direction: {result.direction}")
-    print(f"red_path: [{red}]")
-    print(f"green_path: {result.green_path}")
-    print(f"green_crossings: [{green_crossings}]")
+    print(f"last_path_search_mode: {result.last_path_search_mode}")
+    print(f"stopped_by_round_limit: {'yes' if result.stopped_by_round_limit else 'no'}")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Find a mid-simplification witness in PD code."
+        description="Simplify PD code by applying R1, nugatory, and mid-simplification moves."
     )
     parser.add_argument("inputs", nargs="*", help="PD strings, files, or directories")
     parser.add_argument("--pd-code", "-c", action="append", help="literal PD[...] string")
@@ -1395,6 +1822,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-paths", type=int, default=-1, help="green path cap, or -1 for heuristic sampling")
     parser.add_argument("--ban-heuristic", action="store_true",
                         help="with --max-paths -1, enumerate all green paths instead of heuristic sampling")
+    parser.add_argument("--verbose", action="store_true", help="print progress logs to stderr")
+    parser.add_argument(
+        "--reduction-round",
+        type=int,
+        default=-1,
+        help="maximum mid-simplification rounds, or -1 to continue until stable",
+    )
     parser.add_argument(
         "--known-crossingless-components",
         type=int,
@@ -1449,41 +1883,38 @@ def parse_removed_crossings(text: Optional[str]) -> Optional[List[int]]:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    if args.reduction_round < -1:
+        parser.error("--reduction-round must be -1 or a non-negative integer")
     jobs = collect_jobs(args)
     removed_crossings = parse_removed_crossings(args.remove_crossings)
     show_labels = len(jobs) > 1
-    all_found = True
     had_error = False
 
     if args.json:
         payload = []
         for job in jobs:
             try:
-                (
-                    result,
-                    input_components,
-                    after_removal,
-                    pd_simplification,
-                    search_components,
-                ) = run_job(
+                result, input_components, after_removal = run_job(
                     job,
                     max_paths=args.max_paths,
                     ban_heuristic=args.ban_heuristic,
+                    reduction_round=args.reduction_round,
                     known_crossingless_components=args.known_crossingless_components,
                     removed_crossings=removed_crossings,
+                    verbose=args.verbose,
                 )
-                all_found = all_found and result.found
+                final_components = analyze_components(
+                    result.code, result.crossingless_components
+                )
                 payload.append(
                     result.to_json(
                         input_components=input_components,
                         after_removal_components=after_removal,
-                        pd_simplification=pd_simplification,
-                        search_components=search_components,
+                        final_components=final_components,
                         label=job.label if show_labels else None,
                     )
                 )
             except Exception as exc:
-                all_found = False
                 had_error = True
                 item: Dict[str, object] = {"error": str(exc)}
                 if show_labels:
@@ -1495,36 +1926,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if show_labels:
                 print(f"{job.label}:")
             try:
-                (
-                    result,
-                    input_components,
-                    after_removal,
-                    pd_simplification,
-                    search_components,
-                ) = run_job(
+                result, input_components, after_removal = run_job(
                     job,
                     max_paths=args.max_paths,
                     ban_heuristic=args.ban_heuristic,
+                    reduction_round=args.reduction_round,
                     known_crossingless_components=args.known_crossingless_components,
                     removed_crossings=removed_crossings,
+                    verbose=args.verbose,
                 )
-                all_found = all_found and result.found
-                print_text_result(
-                    result,
-                    input_components,
-                    after_removal,
-                    pd_simplification,
-                    search_components,
-                )
+                print_text_result(result, input_components, after_removal)
             except Exception as exc:
-                all_found = False
                 had_error = True
                 print(f"error: {exc}")
             if show_labels and index + 1 < len(jobs):
                 print()
     if had_error:
         return 2
-    return 0 if all_found else 1
+    return 0
 
 
 if __name__ == "__main__":
