@@ -66,3 +66,17 @@ benchmarks, and component-accounting infrastructure around the port.
 Plain PD codes cannot encode components with no crossings. Both the C++ and
 Python implementations expose component-accounting APIs and CLI options so
 that crossingless components are counted explicitly instead of being lost.
+
+## Citation
+
+If you use this project, please cite it as:
+
+```bibtex
+@misc{cpp_pd_code_simplify_2026,
+  author = {{GGN-2015}},
+  title = {{cpp-pd-code-simplify}: A C++ Port of a PD-Code Mid-Simplification Algorithm},
+  year = {2026},
+  url = {https://github.com/GGN-2015/cpp-pd-code-simplify},
+  note = {The underlying algorithm and original Python prototype were implemented by zzhouhe.}
+}
+```
