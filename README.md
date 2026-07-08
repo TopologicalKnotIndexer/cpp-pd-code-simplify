@@ -52,6 +52,15 @@ This local run uses the deterministic benchmark set documented in
 - [Benchmarking](docs/benchmarking.md)
 - [Python and C++ comparison results](docs/python-cpp-comparison.md)
 
+## Acknowledgements
+
+The algorithm and the original `mid_simplify_v5.py` prototype were implemented
+by [zzhouhe](https://github.com/zzhouhe), also available on Bilibili at
+[space.bilibili.com/37877654](https://space.bilibili.com/37877654). This
+project does not claim original algorithmic contributions; it ports that
+algorithm to C++ and adds command-line tooling, documentation, tests,
+benchmarks, and component-accounting infrastructure around the port.
+
 ## Notes
 
 Plain PD codes cannot encode components with no crossings. Both the C++ and
