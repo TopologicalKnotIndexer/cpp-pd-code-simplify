@@ -27,7 +27,7 @@ true R2-bigon removal, then nugatory-crossing removal.
   --max-thread 16
 ```
 
-To compare the twenty active zip-random large cases with heuristic green-path
+To compare the one hundred active zip-random large cases with heuristic green-path
 sampling and strict terminal stability:
 
 ```sh

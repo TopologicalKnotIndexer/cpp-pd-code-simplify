@@ -30,15 +30,21 @@ The inflated cases preserve the underlying knot type because each added
 crossing is introduced by a reverse type-I Reidemeister move. The fixed seeds
 make the generated PD codes stable across platforms.
 
-Twenty `zip_random_*` cases were sampled from the local
+One hundred `zip_random_*` cases were sampled from the local
 `tests/pd_code.zip` corpus supplied during development. The zip itself is
 ignored and is not committed. The committed fixture
 `tests/benchmark_random_pd_codes.txt` stores the sampled PD codes so the
 benchmark remains reproducible without the original archive. The sample uses
 seed `20260708` and source files with at most 150 crossings; the resulting
 cases span 120 to 150 crossings. The active large benchmark intentionally uses
-the twenty stored `zip_random_*` cases. Runs use batch-mode input so process
+the one hundred stored `zip_random_*` cases. Runs use batch-mode input so process
 startup is paid once per engine rather than once per PD code.
+
+When the local zip fixture is present, regenerate the committed sample with:
+
+```sh
+python tools/generate_benchmark_random_fixture.py --sample-size 100 --prefix-size 20
+```
 
 ## Running
 
@@ -120,7 +126,7 @@ The committed charts were generated on the local Windows development machine
 with a local 64-bit MinGW `g++ -O3 -DNDEBUG` C++ executable. The original
 lightweight suite uses `max_paths=-1`, heuristic disabled, and
 `reduction_round=-1`. The zip-random suite uses `max_paths=-1`, heuristic
-enabled, `reduction_round=-1`, `max_thread=16`, and twenty active large cases.
+enabled, `reduction_round=-1`, `max_thread=16`, and one hundred active large cases.
 Each suite was measured with one repeat.
 
 Original lightweight suite:
@@ -139,9 +145,9 @@ Zip-random large-case suite:
 
 | Engine | Average Time Per PD Code (s) | Average Peak RSS (MiB) |
 | --- | ---: | ---: |
-| C++ CLI | 0.091932 | 5.637 |
-| Python C++ interface | 1.148408 | 60.605 |
-| Python | 0.610344 | 315.789 |
+| C++ CLI | 0.096687 | 6.430 |
+| Python C++ interface | 1.156787 | 61.621 |
+| Python | 0.691633 | 413.359 |
 
 Summary CSV files are stored in
 [`docs/assets/benchmark_original_summary.csv`](assets/benchmark_original_summary.csv)

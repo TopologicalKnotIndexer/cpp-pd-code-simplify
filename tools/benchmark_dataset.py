@@ -8,7 +8,7 @@ laptop, but it still covers several input shapes:
 - a scalable T(2, n) torus-knot family,
 - diagrams inflated by deterministic reverse Reidemeister-I moves, and
 - the historical 31-crossing reference case used by this repository, and
-- twenty deterministic random samples extracted from a local PD-code
+- one hundred deterministic random samples extracted from a local PD-code
   corpus fixture.
 """
 
@@ -43,7 +43,7 @@ X[60,17,61,18],X[59,38,60,39],X[58,47,59,48]
 ]"""
 
 RANDOM_FIXTURE = ROOT / "tests" / "benchmark_random_pd_codes.txt"
-RANDOM_BENCHMARK_LIMIT = 20
+RANDOM_BENCHMARK_LIMIT = 100
 
 
 @dataclass(frozen=True)

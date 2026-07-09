@@ -99,14 +99,14 @@ Zip-random large-case benchmark:
 
 | Engine | Avg Time / PD Code (s) | Peak RSS (MiB) |
 | --- | ---: | ---: |
-| C++ CLI | 0.091932 | 5.637 |
-| Python C++ interface | 1.148408 | 60.605 |
-| Python | 0.610344 | 315.789 |
+| C++ CLI | 0.096687 | 6.430 |
+| Python C++ interface | 1.156787 | 61.621 |
+| Python | 0.691633 | 413.359 |
 
 This local run uses the deterministic benchmark set documented in
 [Benchmarking](docs/benchmarking.md). The lightweight suite is measured with
 `--max-paths -1 --ban-heuristic --reduction-round -1 --max-thread 16`. The
-large zip-random throughput chart uses twenty active zip-random cases
+large zip-random throughput chart uses one hundred active zip-random cases
 with `--max-paths -1 --reduction-round -1 --max-thread 16`; the benchmark
 checks C++ CLI, Python C++ interface, and Python outputs for exact JSON
 agreement in the same batch-mode run that measures time and peak RSS.
