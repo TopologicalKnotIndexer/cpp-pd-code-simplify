@@ -95,6 +95,13 @@ Run Python-only prototype checks, including crossingless component accounting:
 .\.venv\Scripts\python tools\test_python_prototype.py
 ```
 
+Run randomized Khovanov-homology invariance checks. This uses
+`cppkh-interface` to compare the input PD code and the simplified output:
+
+```sh
+.\.venv\Scripts\python tools\test_random_khovanov_invariance.py --include-interface
+```
+
 ## Benchmarks
 
 Compare runtime and peak RSS memory usage:

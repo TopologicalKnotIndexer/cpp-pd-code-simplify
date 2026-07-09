@@ -2,3 +2,4 @@ psutil>=5.9
 matplotlib>=3.8
 cpp-simple-interface>=0.1.2
 pd-code-to-diagram>=0.1.8
+cppkh-interface>=0.1.1

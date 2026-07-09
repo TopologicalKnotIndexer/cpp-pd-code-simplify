@@ -218,6 +218,25 @@ def run_tests(args: argparse.Namespace) -> None:
     if compiler is not None:
         env["PATH"] = str(compiler.parent) + os.pathsep + env.get("PATH", "")
     run([sys.executable, "tools/test_cpp_output_diagram_sanity.py"], env=env)
+    run(
+        [
+            sys.executable,
+            "tools/test_random_khovanov_invariance.py",
+            "--cpp-exe",
+            str(executable),
+            "--sample-count",
+            "4",
+            "--max-r1-moves",
+            "5",
+            "--max-thread",
+            "4",
+            "--timeout",
+            "60",
+            "--cxx",
+            args.cxx,
+        ],
+        env=env,
+    )
 
 
 def copy_tree(source: Path, destination: Path) -> None:
