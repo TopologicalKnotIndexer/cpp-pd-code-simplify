@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -115,6 +116,55 @@ def main() -> int:
     env["PYTHONPATH"] = str(INTERFACE_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     if cxx:
         env["CXX"] = cxx
+    pd_file = ROOT / ".cache" / "python-interface" / "pd-file-inputs.pd"
+    pd_file.parent.mkdir(parents=True, exist_ok=True)
+    pd_file.write_text(
+        f"same_face: {SAME_FACE_GREEN_UNKNOT}\n"
+        "empty: PD[]\n",
+        encoding="utf-8",
+    )
+    pd_file_proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cpp_pd_code_simplify_interface",
+            "--pd-file",
+            str(pd_file),
+            "--max-thread",
+            "1",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+    )
+    assert pd_file_proc.returncode == 0, pd_file_proc.stderr
+    pd_file_payload = json.loads(pd_file_proc.stdout)
+    assert len(pd_file_payload) == 2
+    assert pd_file_payload[0]["label"].endswith(":same_face")
+    assert pd_file_payload[0]["final_pd_code"] == "PD[]"
+    assert pd_file_payload[1]["final_pd_code"] == "PD[]"
+    missing_file_proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cpp_pd_code_simplify_interface",
+            "--pd-file",
+            str(pd_file.parent / "missing-input.pd"),
+        ],
+        cwd=str(ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+    )
+    assert missing_file_proc.returncode == 2
+    assert "Traceback" not in missing_file_proc.stdout + missing_file_proc.stderr
+    assert "error" in json.loads(missing_file_proc.stdout)
+
     proc = subprocess.run(
         [
             sys.executable,

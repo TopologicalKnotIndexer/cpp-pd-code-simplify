@@ -90,10 +90,7 @@ def normalize_pd_codes(pd_codes: PdManyInput) -> list[str]:
     return [normalize_pd_code(pd_code) for pd_code in pd_codes]
 
 
-def _label_for_block(text: str, block_start: int, label_prefix: str, index: int) -> str:
-    line_start = text.rfind("\n", 0, block_start)
-    line_start = 0 if line_start == -1 else line_start + 1
-    before_block = text[line_start:block_start]
+def _label_for_line_prefix(before_block: str, label_prefix: str, index: int) -> str:
     if ":" in before_block:
         line_label = before_block.split(":", 1)[0].strip()
         if line_label:
@@ -104,56 +101,62 @@ def _label_for_block(text: str, block_start: int, label_prefix: str, index: int)
 
 
 def _pd_file_jobs(path: str) -> list[tuple[str, str]]:
-    text = pathlib.Path(path).read_text(encoding="utf-8")
     jobs: list[tuple[str, str]] = []
-    position = 0
-    index = 0
+    fallback_jobs: list[tuple[str, str]] = []
+    current_label: Optional[str] = None
+    current_block: list[str] = []
+    bracket_depth = 0
 
-    while True:
-        start = text.find("PD[", position)
-        if start == -1:
-            break
-        depth = 0
-        end = -1
-        for cursor in range(start + 2, len(text)):
-            if text[cursor] == "[":
-                depth += 1
-            elif text[cursor] == "]":
-                depth -= 1
-                if depth == 0:
-                    end = cursor
+    with pathlib.Path(path).open("r", encoding="utf-8") as input_file:
+        for line in input_file:
+            cleaned = line.strip()
+            if not jobs and not current_block and cleaned and not cleaned.startswith("#"):
+                label = path
+                payload = cleaned
+                if ":" in cleaned:
+                    line_label, payload = cleaned.split(":", 1)
+                    line_label = line_label.strip()
+                    payload = payload.strip()
+                    if line_label:
+                        label = f"{path}:{line_label}"
+                elif fallback_jobs:
+                    label = f"{path}#{len(fallback_jobs) + 1}"
+                fallback_jobs.append((label, payload))
+
+            cursor = 0
+            while cursor < len(line):
+                if current_block:
+                    char = line[cursor]
+                    current_block.append(char)
+                    if char == "[":
+                        bracket_depth += 1
+                    elif char == "]":
+                        bracket_depth -= 1
+                        if bracket_depth == 0:
+                            jobs.append((current_label or f"{path}#{len(jobs) + 1}", "".join(current_block)))
+                            current_label = None
+                            current_block = []
+                    cursor += 1
+                    continue
+
+                start = line.find("PD[", cursor)
+                if start == -1:
                     break
-        if end == -1:
-            jobs.append((f"{path}#{index + 1}", text[start:].strip()))
-            break
-        jobs.append((
-            _label_for_block(text, start, path, index),
-            text[start : end + 1],
-        ))
-        index += 1
-        position = end + 1
+                current_label = _label_for_line_prefix(line[:start], path, len(jobs))
+                current_block = ["PD["]
+                bracket_depth = 1
+                cursor = start + 3
 
     if jobs:
+        if current_block:
+            jobs.append((f"{path}#{len(jobs) + 1}", "".join(current_block).strip()))
         if len(jobs) == 1:
             jobs[0] = (path, jobs[0][1])
         return jobs
 
-    for line in text.splitlines():
-        cleaned = line.strip()
-        if not cleaned or cleaned.startswith("#"):
-            continue
-        label = path
-        payload = cleaned
-        if ":" in cleaned:
-            line_label, payload = cleaned.split(":", 1)
-            line_label = line_label.strip()
-            payload = payload.strip()
-            if line_label:
-                label = f"{path}:{line_label}"
-        elif jobs:
-            label = f"{path}#{len(jobs) + 1}"
-        jobs.append((label, payload))
-    return jobs
+    if current_block:
+        fallback_jobs.append((f"{path}#{len(fallback_jobs) + 1}", "".join(current_block).strip()))
+    return fallback_jobs
 
 
 @contextlib.contextmanager
@@ -1033,7 +1036,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     exit_code = 0
     if args.pd_file:
-        jobs = _pd_file_jobs(args.pd_file)
+        try:
+            jobs = _pd_file_jobs(args.pd_file)
+        except KeyboardInterrupt:
+            print(json.dumps({"error": "interrupted by Ctrl+C"}, indent=2))
+            return 130
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}, indent=2))
+            return 2
         batch_payload = []
         show_labels = len(jobs) > 1
         for label, line in jobs:
