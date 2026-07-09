@@ -87,9 +87,21 @@ Original lightweight benchmark:
 
 ![Original benchmark bar chart comparing C++ CLI, Python C++ interface, and Python](docs/assets/benchmark_original_cpp_python.png)
 
+| Engine | Avg Time / PD Code (s) | Peak RSS (MiB) |
+| --- | ---: | ---: |
+| C++ CLI | 0.033047 | 11.852 |
+| Python C++ interface | 1.057039 | 60.316 |
+| Python | 1.709355 | 436.211 |
+
 Zip-random large-case benchmark:
 
 ![Zip-random benchmark bar chart comparing C++ CLI, Python C++ interface, and Python](docs/assets/benchmark_random_cpp_python.png)
+
+| Engine | Avg Time / PD Code (s) | Peak RSS (MiB) |
+| --- | ---: | ---: |
+| C++ CLI | 0.098539 | 4.949 |
+| Python C++ interface | 1.146772 | 57.586 |
+| Python | 0.570628 | 26.023 |
 
 This local run uses the deterministic benchmark set documented in
 [Benchmarking](docs/benchmarking.md). The lightweight suite is measured with

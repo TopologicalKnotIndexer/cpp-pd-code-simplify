@@ -128,9 +128,9 @@ Original lightweight suite:
 
 | Engine | Average Time Per PD Code (s) | Average Peak RSS (MiB) |
 | --- | ---: | ---: |
-| C++ CLI | 0.043827 | 11.684 |
-| Python C++ interface | 0.068139 | 36.590 |
-| Python | 2.624598 | 430.738 |
+| C++ CLI | 0.033047 | 11.852 |
+| Python C++ interface | 1.057039 | 60.316 |
+| Python | 1.709355 | 436.211 |
 
 Zip-random large-case suite:
 
@@ -138,9 +138,9 @@ Zip-random large-case suite:
 
 | Engine | Average Time Per PD Code (s) | Average Peak RSS (MiB) |
 | --- | ---: | ---: |
-| C++ CLI | 116.428829 | 486.109 |
-| Python C++ interface | 113.286344 | 508.777 |
-| Python | 1135.775731 | 1354.438 |
+| C++ CLI | 0.098539 | 4.949 |
+| Python C++ interface | 1.146772 | 57.586 |
+| Python | 0.570628 | 26.023 |
 
 Summary CSV files are stored in
 [`docs/assets/benchmark_original_summary.csv`](assets/benchmark_original_summary.csv)

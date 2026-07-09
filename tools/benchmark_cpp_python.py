@@ -122,13 +122,31 @@ def result_list(stdout: str) -> List[Dict[str, object]]:
 
 
 def interface_env(interface_cxx: Optional[str] = None) -> Dict[str, str]:
-    env = {
-        **os.environ,
-        "PYTHONPATH": str(INTERFACE_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""),
-        "CPP_PD_CODE_SIMPLIFY_INTERFACE_CACHE_DIR": str(ROOT / ".cache" / "benchmark-interface"),
-    }
+    env = compiler_runtime_env(interface_cxx)
+    env["PYTHONPATH"] = str(INTERFACE_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    env["CPP_PD_CODE_SIMPLIFY_INTERFACE_CACHE_DIR"] = str(ROOT / ".cache" / "benchmark-interface")
     if interface_cxx:
         env["CXX"] = interface_cxx
+    return env
+
+
+def compiler_runtime_env(cxx: Optional[str] = None) -> Dict[str, str]:
+    env = dict(os.environ)
+    if not cxx:
+        return env
+    compiler = Path(cxx)
+    if not compiler.exists():
+        found = shutil.which(cxx)
+        if found:
+            compiler = Path(found)
+    if not compiler.exists():
+        return env
+    compiler_dir = str(compiler.parent)
+    env["PATH"] = compiler_dir + os.pathsep + env.get("PATH", "")
+    if sys.platform.startswith("linux"):
+        env["LD_LIBRARY_PATH"] = compiler_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+    elif sys.platform == "darwin":
+        env["DYLD_LIBRARY_PATH"] = compiler_dir + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
     return env
 
 
@@ -246,7 +264,12 @@ def run_benchmark(
             repeat_rows: List[RawRow] = []
             repeat_results: Dict[str, List[Dict[str, object]]] = {}
             for engine in ("cpp", "interface", "python"):
-                env = interface_env(interface_cxx) if engine == "interface" else None
+                if engine == "interface":
+                    env = interface_env(interface_cxx)
+                elif engine == "cpp":
+                    env = compiler_runtime_env(interface_cxx)
+                else:
+                    env = None
                 elapsed, peak_mib, return_code, stdout = run_peak(
                     commands[engine],
                     sample_interval,
