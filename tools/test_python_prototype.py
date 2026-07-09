@@ -67,6 +67,34 @@ def main() -> int:
         same_face_result.crossingless_components == 1,
         "Python same-face green path unknot should preserve one crossingless component",
     )
+    cycle_code = simplify.simplify_pd_code(
+        simplify.parse_pd_code((ROOT / "tests/fixtures/do_check_cycle_pd.txt").read_text())
+    ).code
+    cycle_diagram = simplify.Diagram(cycle_code)
+    cycle_graph = simplify.DualGraph(cycle_diagram)
+    cycle_red = simplify.possible_red_lines(cycle_diagram)[0]
+    blocked_cycle_graph = simplify.clone_dual_graph(cycle_graph)
+    for endpoint in cycle_red[1:-1]:
+        right_region = blocked_cycle_graph.edge_to_face[endpoint.key]
+        left_region = blocked_cycle_graph.edge_to_face[
+            cycle_diagram.opposite(endpoint).key
+        ]
+        edge = blocked_cycle_graph.edge(right_region, left_region)
+        if edge is not None:
+            edge.weight = simplify.BLOCKED_WEIGHT
+    cycle_green = [3, 0, 4, 5, 110, 109, 124, 112, 111, 115, 114, 46]
+    cycle_witness = simplify.SimplificationResult(path_search_mode="heuristic")
+    require(
+        not simplify.do_check(
+            cycle_diagram,
+            blocked_cycle_graph,
+            cycle_red,
+            cycle_green,
+            "right",
+            cycle_witness,
+        ),
+        "Python do_check should reject repeated propagation states instead of looping",
+    )
     canonical_regression = simplify.parse_pd_code(
         "[[3,88,4,1],[4,2,5,1],[5,2,6,3],[9,7,10,6],"
         "[10,7,11,8],[11,9,12,8],[15,12,16,13],[16,14,17,13],"

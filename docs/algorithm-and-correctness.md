@@ -125,6 +125,10 @@ the disk:
 If propagation completes with no contradiction, the red and green paths
 bound a valid simplifying disk. The result records the red path, the green
 path, the side used, and the green crossing data.
+If the same endpoint and level are reached twice during one propagation trace
+before hitting the red boundary or green path, the candidate is rejected. Such
+a repeated state is a closed propagation orbit, and rejecting it keeps the
+validator finite without accepting an uncertified witness.
 
 ## Applying A Witness
 

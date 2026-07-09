@@ -1344,7 +1344,10 @@ def do_check(
     green_path: List[int],
     direction: str,
     result: SimplificationResult,
+    timeout: int = -1,
+    _timeout_deadline: Optional[float] = None,
 ) -> bool:
+    check_timeout(timeout, _timeout_deadline)
     green_left_cross: List[int] = []
     for i in range(len(green_path) - 1):
         f1 = green_path[i]
@@ -1386,13 +1389,21 @@ def do_check(
     good_path = True
 
     while to_check and good_path:
+        check_timeout(timeout, _timeout_deadline)
         start_key = to_check.pop()
         queued.discard(start_key)
         cross_strand = endpoint_from_key(start_key)
+        trace_seen: Set[Tuple[int, str]] = set()
 
         while True:
+            check_timeout(timeout, _timeout_deadline)
             cross_key = cross_strand.key
             current_level = check_result[cross_key]
+            trace_state = (cross_key, current_level)
+            if trace_state in trace_seen:
+                good_path = False
+                break
+            trace_seen.add(trace_state)
             opposite = diagram.opposite(cross_strand)
             opposite_key = opposite.key
             opposite_result = check_result.get(opposite_key)
@@ -1578,14 +1589,32 @@ def search_single_red_path(
         outcome.tested_green_paths += 1
         if len(green_path) >= len(red_path):
             continue
-        if do_check(diagram, graph, red_path, green_path, "left", outcome.witness):
+        if do_check(
+            diagram,
+            graph,
+            red_path,
+            green_path,
+            "left",
+            outcome.witness,
+            timeout,
+            _timeout_deadline,
+        ):
             if not require_applicable or witness_has_applicable_surgery(code, outcome.witness):
                 outcome.found = True
                 outcome.completed = True
                 outcome.witness.tested_green_paths = outcome.tested_green_paths
                 return outcome
             outcome.witness = SimplificationResult(path_search_mode=path_search_mode)
-        if do_check(diagram, graph, red_path, green_path, "right", outcome.witness):
+        if do_check(
+            diagram,
+            graph,
+            red_path,
+            green_path,
+            "right",
+            outcome.witness,
+            timeout,
+            _timeout_deadline,
+        ):
             if not require_applicable or witness_has_applicable_surgery(code, outcome.witness):
                 outcome.found = True
                 outcome.completed = True

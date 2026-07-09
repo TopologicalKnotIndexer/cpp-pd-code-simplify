@@ -1323,7 +1323,9 @@ bool do_check(
     const std::vector<Endpoint>& red_path,
     const std::vector<int>& green_path,
     Direction direction,
-    SimplificationResult& result) {
+    SimplificationResult& result,
+    const SimplifierOptions& options) {
+    check_timeout(options);
     std::vector<int> green_left_cross;
     green_left_cross.reserve(green_path.size());
 
@@ -1378,14 +1380,24 @@ bool do_check(
 
     bool good_path = true;
     while (!to_check.empty() && good_path) {
+        check_timeout(options);
         const int start_key = to_check.back();
         to_check.pop_back();
         queued.erase(start_key);
         Endpoint cross_strand = endpoint_from_key(start_key);
+        std::unordered_set<long long> trace_seen;
 
         while (true) {
+            check_timeout(options);
             const int cross_key = endpoint_key(cross_strand);
             const Level current_level = check_result.at(cross_key);
+            const long long trace_key =
+                (static_cast<long long>(cross_key) << 1) ^
+                static_cast<int>(current_level);
+            if (!trace_seen.insert(trace_key).second) {
+                good_path = false;
+                break;
+            }
             const Endpoint opposite = diagram.opposite(cross_strand);
             const int opposite_key = endpoint_key(opposite);
             const auto opposite_result = check_result.find(opposite_key);
@@ -2345,7 +2357,14 @@ RedPathSearchOutcome search_single_red_path(
         if (green_path.size() >= red_path.size()) {
             continue;
         }
-        if (do_check(diagram, graph, red_path, green_path, Direction::Left, outcome.witness)) {
+        if (do_check(
+                diagram,
+                graph,
+                red_path,
+                green_path,
+                Direction::Left,
+                outcome.witness,
+                options)) {
             if (!options.require_applicable || witness_has_applicable_surgery(code, outcome.witness)) {
                 outcome.found = true;
                 outcome.completed = true;
@@ -2354,7 +2373,14 @@ RedPathSearchOutcome search_single_red_path(
             }
             clear_witness(outcome.witness);
         }
-        if (do_check(diagram, graph, red_path, green_path, Direction::Right, outcome.witness)) {
+        if (do_check(
+                diagram,
+                graph,
+                red_path,
+                green_path,
+                Direction::Right,
+                outcome.witness,
+                options)) {
             if (!options.require_applicable || witness_has_applicable_surgery(code, outcome.witness)) {
                 outcome.found = true;
                 outcome.completed = true;

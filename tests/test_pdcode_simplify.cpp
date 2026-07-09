@@ -2,7 +2,9 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -13,6 +15,16 @@ void require(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+std::string read_text_file(const std::string& path) {
+    std::ifstream input(path.c_str());
+    if (!input) {
+        throw std::runtime_error("Could not open fixture: " + path);
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
 }
 
 void test_parser() {
@@ -332,6 +344,23 @@ void test_canonicalize_after_each_reduction() {
             "per-step canonicalization regression should preserve the unknot component");
 }
 
+void test_do_check_cycle_respects_timeout() {
+    const auto code = pdcode_simplify::parse_pd_code(
+        read_text_file("tests/fixtures/do_check_cycle_pd.txt"));
+    pdcode_simplify::SimplifierOptions options;
+    options.max_threads = 1;
+    options.timeout_seconds = 1;
+    options.has_timeout_deadline = true;
+    options.timeout_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+
+    const auto result = pdcode_simplify::reduce_pd_code(code, 0, options, 1);
+    require(result.timed_out,
+            "cycle-guard regression should time out instead of hanging in do_check");
+    require(result.code.size() == code.size(),
+            "timed-out cycle-guard regression should keep the current best diagram");
+}
+
 void test_step_pd_callback() {
     const auto code = pdcode_simplify::parse_pd_code(
         "PD[X[1,5,2,4],X[2,5,3,6],X[6,3,1,4]]");
@@ -368,6 +397,7 @@ int main() {
         test_reference_sample();
         test_same_face_green_path_unknot();
         test_canonicalize_after_each_reduction();
+        test_do_check_cycle_respects_timeout();
         test_step_pd_callback();
         std::cout << "All tests passed\n";
         return EXIT_SUCCESS;
