@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <csignal>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -23,6 +24,16 @@
 #endif
 
 namespace {
+
+volatile std::sig_atomic_t g_interrupted = 0;
+
+void handle_interrupt(int) {
+    g_interrupted = 1;
+}
+
+bool interrupted() {
+    return g_interrupted != 0;
+}
 
 std::string local_timestamp() {
     const std::time_t now = std::time(nullptr);
@@ -68,6 +79,7 @@ void print_help(const char* program) {
         << "With --max-paths -1, heuristic green-path sampling is enabled by default.\n"
         << "Use --ban-heuristic to force brute-force green-path enumeration.\n"
         << "Use --max-thread N to cap brute-force worker threads; -1 means auto.\n"
+        << "Use --timeout K to cap each PD-code job in seconds; -1 means no timeout.\n"
         << "Use --verbose to print progress logs to stderr.\n"
         << "If no input is given, the CLI tries to read PD.txt from the current directory.\n";
 }
@@ -350,6 +362,7 @@ void print_text_result(
     std::cout << "last_path_search_mode: " << result.last_path_search_mode << '\n';
     std::cout << "stopped_by_round_limit: "
               << (result.stopped_by_round_limit ? "yes" : "no") << '\n';
+    std::cout << "timed_out: " << (result.timed_out ? "yes" : "no") << '\n';
 }
 
 void print_text_error(const std::string& error) {
@@ -427,7 +440,9 @@ void print_json_result(
     std::cout << "  \"last_path_search_mode\": \""
               << json_escape(result.last_path_search_mode) << "\",\n";
     std::cout << "  \"stopped_by_round_limit\": "
-              << (result.stopped_by_round_limit ? "true" : "false") << "\n";
+              << (result.stopped_by_round_limit ? "true" : "false") << ",\n";
+    std::cout << "  \"timed_out\": "
+              << (result.timed_out ? "true" : "false") << "\n";
     std::cout << "}\n";
 }
 
@@ -444,9 +459,13 @@ void print_json_error(const std::string& error, const std::string* label = nullp
 
 int main(int argc, char** argv) {
     try {
+        std::signal(SIGINT, handle_interrupt);
         pdcode_simplify::SimplifierOptions options;
         options.progress = [](const std::string& message) {
             print_progress_log(message);
+        };
+        options.should_cancel = []() {
+            return interrupted();
         };
         bool json = false;
         int reduction_round = -1;
@@ -481,6 +500,14 @@ int main(int argc, char** argv) {
                 options.max_threads = std::stoi(argv[++i]);
                 if (options.max_threads < -1 || options.max_threads == 0) {
                     throw std::invalid_argument("--max-thread must be -1 or a positive integer");
+                }
+            } else if (arg == "--timeout") {
+                if (i + 1 >= argc) {
+                    throw std::invalid_argument("--timeout requires a value");
+                }
+                options.timeout_seconds = std::stoi(argv[++i]);
+                if (options.timeout_seconds < -1 || options.timeout_seconds == 0) {
+                    throw std::invalid_argument("--timeout must be -1 or a positive integer");
                 }
             } else if (arg == "--reduction-round") {
                 if (i + 1 >= argc) {
@@ -568,6 +595,9 @@ int main(int argc, char** argv) {
 
         for (std::size_t i = 0; i < jobs.size(); ++i) {
             try {
+                if (interrupted()) {
+                    throw std::runtime_error("interrupted by Ctrl+C");
+                }
                 if (jobs[i].has_error()) {
                     throw std::runtime_error(jobs[i].error);
                 }
@@ -594,6 +624,9 @@ int main(int argc, char** argv) {
                     job_crossingless_components,
                     job_options,
                     reduction_round);
+                if (result.timed_out) {
+                    had_error = true;
+                }
                 const auto final_components = pdcode_simplify::analyze_components(
                     result.code, result.crossingless_components);
 
@@ -624,6 +657,9 @@ int main(int argc, char** argv) {
                     }
                     print_text_error(error.what());
                 }
+                if (interrupted()) {
+                    break;
+                }
             }
 
             if (json && jobs.size() > 1 && i + 1 < jobs.size()) {
@@ -638,12 +674,15 @@ int main(int argc, char** argv) {
             std::cout << "]\n";
         }
 
+        if (interrupted()) {
+            return 130;
+        }
         if (had_error) {
             return 2;
         }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';
-        return 2;
+        return interrupted() ? 130 : 2;
     }
 }

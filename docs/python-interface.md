@@ -76,8 +76,15 @@ internal numbering unchanged while simplifying.
 sampling in the C++ backend. Pass `ban_heuristic=True` to request exhaustive
 green-path enumeration for the same input. `reduction_round=-1` is the
 default and applies mid-simplification witnesses until stable. Pass
-`verbose=True` to forward timestamped C++ progress logs to stderr. Verbose log
-lines use local wall-clock time in `YYYY-MM-DD HH:MM:SS` format.
+`timeout=K` to cap a call at `K` seconds; the default `-1` has no timeout. Pass
+`verbose=True` to forward timestamped C++ progress logs to stderr. If a call
+exceeds its timeout, the returned dictionary still contains the best PD code
+found so far and sets `timed_out` to `True`. Verbose log lines use local
+wall-clock time in `YYYY-MM-DD HH:MM:SS` format. When `max_thread=-1` reaches a
+brute-force search phase, verbose logs also include `actual_threads`, the
+worker count selected by the C++ backend for that phase. Calls run the C++
+backend in a helper process, so `Ctrl+C` can terminate active C++ work and its
+worker threads cleanly before the Python process exits.
 
 Batch use:
 

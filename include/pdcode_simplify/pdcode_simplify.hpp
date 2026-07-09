@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <iosfwd>
@@ -51,10 +52,14 @@ struct GreenCrossing {
 struct SimplifierOptions {
     int max_paths = -1;
     int max_threads = -1;
+    int timeout_seconds = -1;
+    bool has_timeout_deadline = false;
+    std::chrono::steady_clock::time_point timeout_deadline{};
     bool ban_heuristic = false;
     bool require_applicable = false;
     bool verbose = false;
     std::function<void(const std::string&)> progress;
+    std::function<bool()> should_cancel;
 };
 
 struct LinkComponentSummary {
@@ -121,6 +126,7 @@ struct ReductionResult {
     std::size_t tested_green_paths = 0;
     std::string last_path_search_mode;
     bool stopped_by_round_limit = false;
+    bool timed_out = false;
 };
 
 PDCODE_SIMPLIFY_API PDCode parse_pd_code(const std::string& text);

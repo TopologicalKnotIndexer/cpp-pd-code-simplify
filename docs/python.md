@@ -30,11 +30,17 @@ Use `--json` for structured output containing `final_pd_code` and
 `final_crossings`. Use `--reduction-round K` to cap applied
 mid-simplification rounds; the default `-1` runs until stable, with a
 brute-force check when heuristic mode can no longer find a path. Use
-`--verbose` to print timestamped progress logs to stderr. Verbose log lines
-use local wall-clock time in `YYYY-MM-DD HH:MM:SS` format. Final output
-PD-code strings are normalized for display: each crossing is written from the
-under-incoming edge, labels are renumbered along oriented components from
-`1`, and crossing rows are sorted lexicographically.
+`--timeout K` to cap each PD-code job at `K` seconds; the default `-1` has no
+timeout. A timed-out job returns the best PD code found so far and sets
+`timed_out` in JSON/text output. Use `--verbose` to print timestamped progress
+logs to stderr. Verbose log lines use local wall-clock time in
+`YYYY-MM-DD HH:MM:SS` format. When `--max-thread -1` reaches a brute-force
+search phase, verbose logs also include `actual_threads`, the worker count
+selected for that phase. `Ctrl+C` cancels active multiprocessing workers and
+exits with status `130`. Final output PD-code strings are normalized for
+display: each crossing is written from the under-incoming edge, labels are
+renumbered along oriented components from `1`, and crossing rows are sorted
+lexicographically.
 
 Report crossingless components after removing all trefoil crossings:
 
@@ -59,6 +65,8 @@ high-level API that applies witnesses and returns the internal final PD code.
 Use `result.to_json()["final_pd_code"]` or `format_final_pd_code(result.code)`
 when presenting the final PD code to users. The plain `format_pd_code`
 function preserves the internal tuple order and labels.
+If `reduce_pd_code(..., timeout=K)` exceeds its deadline, it returns the
+current best result with `result.timed_out == True`.
 
 Component accounting is available directly:
 

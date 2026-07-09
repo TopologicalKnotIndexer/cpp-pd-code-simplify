@@ -15,6 +15,7 @@ import multiprocessing
 import os
 import re
 import sys
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -37,6 +38,36 @@ def local_timestamp() -> str:
 
 def format_progress_log(message: str) -> str:
     return f"[pdcode-simplify {local_timestamp()}] {message}"
+
+
+class PdCodeSimplifyTimeoutError(RuntimeError):
+    pass
+
+
+def validate_timeout(timeout: int) -> None:
+    if timeout < -1 or timeout == 0:
+        raise ValueError("timeout must be -1 or a positive integer")
+
+
+def timeout_deadline(timeout: int, existing: Optional[float] = None) -> Optional[float]:
+    validate_timeout(timeout)
+    if timeout > 0 and existing is None:
+        return time.monotonic() + timeout
+    return existing
+
+
+def check_timeout(timeout: int, deadline: Optional[float]) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise PdCodeSimplifyTimeoutError(f"timeout after {timeout} seconds")
+
+
+def remaining_timeout_seconds(timeout: int, deadline: Optional[float]) -> Optional[float]:
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise PdCodeSimplifyTimeoutError(f"timeout after {timeout} seconds")
+    return remaining
 
 
 @dataclass(frozen=True, order=True)
@@ -160,6 +191,7 @@ class ReductionResult:
     tested_green_paths: int = 0
     last_path_search_mode: str = ""
     stopped_by_round_limit: bool = False
+    timed_out: bool = False
 
     def to_json(
         self,
@@ -192,6 +224,7 @@ class ReductionResult:
             "tested_green_paths": self.tested_green_paths,
             "last_path_search_mode": self.last_path_search_mode,
             "stopped_by_round_limit": self.stopped_by_round_limit,
+            "timed_out": self.timed_out,
         })
         return data
 
@@ -958,6 +991,8 @@ _PARALLEL_RED_LINES: Optional[List[List[Endpoint]]] = None
 _PARALLEL_REQUIRE_APPLICABLE = False
 _PARALLEL_BEST_INDEX: Any = None
 _PARALLEL_BEST_LOCK: Any = None
+_PARALLEL_TIMEOUT = -1
+_PARALLEL_TIMEOUT_DEADLINE: Optional[float] = None
 
 
 def _parallel_bruteforce_initializer(
@@ -966,6 +1001,8 @@ def _parallel_bruteforce_initializer(
     require_applicable: bool,
     best_index: Any,
     best_lock: Any,
+    timeout: int,
+    deadline: Optional[float],
 ) -> None:
     global _PARALLEL_CODE
     global _PARALLEL_DIAGRAM
@@ -974,14 +1011,20 @@ def _parallel_bruteforce_initializer(
     global _PARALLEL_REQUIRE_APPLICABLE
     global _PARALLEL_BEST_INDEX
     global _PARALLEL_BEST_LOCK
+    global _PARALLEL_TIMEOUT
+    global _PARALLEL_TIMEOUT_DEADLINE
 
     _PARALLEL_CODE = code
+    check_timeout(timeout, deadline)
     _PARALLEL_DIAGRAM = Diagram(code)
+    check_timeout(timeout, deadline)
     _PARALLEL_BASE_GRAPH = DualGraph(_PARALLEL_DIAGRAM)
     _PARALLEL_RED_LINES = red_lines
     _PARALLEL_REQUIRE_APPLICABLE = require_applicable
     _PARALLEL_BEST_INDEX = best_index
     _PARALLEL_BEST_LOCK = best_lock
+    _PARALLEL_TIMEOUT = timeout
+    _PARALLEL_TIMEOUT_DEADLINE = deadline
 
 
 def _parallel_should_skip(red_index: int) -> bool:
@@ -994,6 +1037,15 @@ def _parallel_record_found(red_index: int) -> None:
     with _PARALLEL_BEST_LOCK:
         if red_index < _PARALLEL_BEST_INDEX.value:
             _PARALLEL_BEST_INDEX.value = red_index
+
+
+def terminate_process_pool(executor: concurrent.futures.ProcessPoolExecutor) -> None:
+    processes = getattr(executor, "_processes", None)
+    if processes:
+        for process in list(processes.values()):
+            if process is not None and process.is_alive():
+                process.terminate()
+    executor.shutdown(wait=False, cancel_futures=True)
 
 
 def crossing_graph_component_count(code: PDCode) -> int:
@@ -1049,7 +1101,10 @@ def collect_simple_paths(
     target: int,
     cutoff: int,
     max_paths: int,
+    timeout: int = -1,
+    _timeout_deadline: Optional[float] = None,
 ) -> List[List[int]]:
+    check_timeout(timeout, _timeout_deadline)
     if (
         source == target
         or source < 0
@@ -1063,10 +1118,11 @@ def collect_simple_paths(
     paths: List[List[int]] = []
     visited = [False for _ in graph.faces]
     current_path = [source]
-    distance = heuristic_distances_to_target(graph, target, cutoff)
+    distance = heuristic_distances_to_target(graph, target, cutoff, timeout, _timeout_deadline)
     visited[source] = True
 
     def dfs(current: int, current_weight: int) -> None:
+        check_timeout(timeout, _timeout_deadline)
         if len(current_path) - 1 >= cutoff:
             return
         if (
@@ -1112,12 +1168,19 @@ def collect_simple_paths(
     return paths
 
 
-def heuristic_distances_to_target(graph: DualGraph, target: int, cutoff: int) -> List[int]:
+def heuristic_distances_to_target(
+    graph: DualGraph,
+    target: int,
+    cutoff: int,
+    timeout: int = -1,
+    _timeout_deadline: Optional[float] = None,
+) -> List[int]:
     infinity = 10**9
     distance = [infinity for _ in graph.faces]
     queue: Deque[int] = deque([target])
     distance[target] = 0
     while queue:
+        check_timeout(timeout, _timeout_deadline)
         current = queue.popleft()
         for edge_index in graph.adjacency[current]:
             edge = graph.edges[edge_index]
@@ -1136,7 +1199,10 @@ def collect_heuristic_paths(
     source: int,
     target: int,
     cutoff: int,
+    timeout: int = -1,
+    _timeout_deadline: Optional[float] = None,
 ) -> List[List[int]]:
+    check_timeout(timeout, _timeout_deadline)
     face_count = len(graph.faces)
     if (
         source == target
@@ -1149,7 +1215,7 @@ def collect_heuristic_paths(
         return []
 
     infinity = 10**9
-    distance = heuristic_distances_to_target(graph, target, cutoff)
+    distance = heuristic_distances_to_target(graph, target, cutoff, timeout, _timeout_deadline)
     if distance[source] == infinity or distance[source] >= cutoff:
         return []
 
@@ -1189,6 +1255,7 @@ def collect_heuristic_paths(
     popped_by_depth_face: Dict[Tuple[int, int], int] = {}
     popped_states = 0
     while heap and popped_states < state_budget and len(paths) < path_budget:
+        check_timeout(timeout, _timeout_deadline)
         (
             _estimated_weight,
             _estimated_length,
@@ -1453,7 +1520,10 @@ def search_single_red_path(
     require_applicable: bool,
     path_search_mode: str,
     should_skip: Optional[Callable[[], bool]] = None,
+    timeout: int = -1,
+    _timeout_deadline: Optional[float] = None,
 ) -> RedPathSearchOutcome:
+    check_timeout(timeout, _timeout_deadline)
     outcome = RedPathSearchOutcome()
     outcome.witness.path_search_mode = path_search_mode
     if should_skip is not None and should_skip():
@@ -1473,6 +1543,7 @@ def search_single_red_path(
     ]
 
     for endpoint in red_path[1:-1]:
+        check_timeout(timeout, _timeout_deadline)
         right_region = graph.edge_to_face[endpoint.key]
         left_region = graph.edge_to_face[diagram.opposite(endpoint).key]
         edge = graph.edge(right_region, left_region)
@@ -1483,18 +1554,24 @@ def search_single_red_path(
     cutoff = len(red_path) - 1
     for source in sources:
         for destination in destinations:
+            check_timeout(timeout, _timeout_deadline)
             if should_skip is not None and should_skip():
                 outcome.skipped = True
                 return outcome
             if max_paths == -1 and not ban_heuristic:
-                found = collect_heuristic_paths(graph, source, destination, cutoff)
+                found = collect_heuristic_paths(
+                    graph, source, destination, cutoff, timeout, _timeout_deadline
+                )
             else:
-                found = collect_simple_paths(graph, source, destination, cutoff, max_paths)
+                found = collect_simple_paths(
+                    graph, source, destination, cutoff, max_paths, timeout, _timeout_deadline
+                )
             paths.extend(found)
             if max_paths != -1 and len(paths) > max_paths:
                 break
 
     for green_path in paths:
+        check_timeout(timeout, _timeout_deadline)
         outcome.tested_green_paths += 1
         if len(green_path) >= len(red_path):
             continue
@@ -1519,6 +1596,7 @@ def search_single_red_path(
 
 
 def _parallel_bruteforce_worker(red_index: int) -> RedPathSearchOutcome:
+    check_timeout(_PARALLEL_TIMEOUT, _PARALLEL_TIMEOUT_DEADLINE)
     if (
         _PARALLEL_CODE is None
         or _PARALLEL_DIAGRAM is None
@@ -1538,6 +1616,8 @@ def _parallel_bruteforce_worker(red_index: int) -> RedPathSearchOutcome:
         require_applicable=_PARALLEL_REQUIRE_APPLICABLE,
         path_search_mode="bruteforce",
         should_skip=lambda: _parallel_should_skip(red_index),
+        timeout=_PARALLEL_TIMEOUT,
+        _timeout_deadline=_PARALLEL_TIMEOUT_DEADLINE,
     )
     if outcome.found:
         _parallel_record_found(red_index)
@@ -1579,7 +1659,10 @@ def find_simplification_parallel_bruteforce(
     red_lines: List[List[Endpoint]],
     require_applicable: bool,
     worker_count: int,
+    timeout: int = -1,
+    _timeout_deadline: Optional[float] = None,
 ) -> SimplificationResult:
+    check_timeout(timeout, _timeout_deadline)
     if not red_lines:
         return SimplificationResult(path_search_mode="bruteforce")
     outcomes: List[RedPathSearchOutcome] = [
@@ -1588,17 +1671,43 @@ def find_simplification_parallel_bruteforce(
     with multiprocessing.Manager() as manager:
         best_index = manager.Value("i", len(red_lines))
         best_lock = manager.Lock()
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=worker_count,
-            initializer=_parallel_bruteforce_initializer,
-            initargs=(code, red_lines, require_applicable, best_index, best_lock),
-        ) as executor:
+        executor: Optional[concurrent.futures.ProcessPoolExecutor] = None
+        try:
+            executor = concurrent.futures.ProcessPoolExecutor(
+                max_workers=worker_count,
+                initializer=_parallel_bruteforce_initializer,
+                initargs=(
+                    code,
+                    red_lines,
+                    require_applicable,
+                    best_index,
+                    best_lock,
+                    timeout,
+                    _timeout_deadline,
+                ),
+            )
             futures = [
                 executor.submit(_parallel_bruteforce_worker, index)
                 for index in range(len(red_lines))
             ]
             for index, future in enumerate(futures):
-                outcomes[index] = future.result()
+                check_timeout(timeout, _timeout_deadline)
+                try:
+                    outcomes[index] = future.result(
+                        timeout=remaining_timeout_seconds(timeout, _timeout_deadline)
+                    )
+                except concurrent.futures.TimeoutError as exc:
+                    raise PdCodeSimplifyTimeoutError(
+                        f"timeout after {timeout} seconds"
+                    ) from exc
+        except (KeyboardInterrupt, PdCodeSimplifyTimeoutError):
+            if executor is not None:
+                terminate_process_pool(executor)
+                executor = None
+            raise
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
     return merge_red_path_outcomes(outcomes, "bruteforce")
 
 
@@ -1608,9 +1717,15 @@ def find_simplification(
     ban_heuristic: bool = False,
     require_applicable: bool = False,
     max_thread: int = -1,
+    verbose: bool = False,
+    progress: Optional[Callable[[str], None]] = None,
+    timeout: int = -1,
+    _timeout_deadline: Optional[float] = None,
 ) -> SimplificationResult:
     if max_thread < -1 or max_thread == 0:
         raise ValueError("max_thread must be -1 or a positive integer")
+    deadline = timeout_deadline(timeout, _timeout_deadline)
+    check_timeout(timeout, deadline)
     result = SimplificationResult()
     if max_paths == -1 and not ban_heuristic:
         result.path_search_mode = "heuristic"
@@ -1619,19 +1734,34 @@ def find_simplification(
     else:
         result.path_search_mode = "bounded"
     diagram = Diagram(code)
+    check_timeout(timeout, deadline)
     base_graph = DualGraph(diagram)
+    check_timeout(timeout, deadline)
     red_lines = possible_red_lines(diagram)
+    check_timeout(timeout, deadline)
     if max_paths == -1 and ban_heuristic:
         worker_count = selected_bruteforce_worker_count(max_thread, len(red_lines))
+        if max_thread == -1:
+            _emit_progress(
+                verbose,
+                progress,
+                (
+                    f"bruteforce_threads max_thread=-1 "
+                    f"actual_threads={worker_count} red_paths={len(red_lines)}"
+                ),
+            )
         if worker_count > 1:
             return find_simplification_parallel_bruteforce(
                 code,
                 red_lines,
                 require_applicable,
                 worker_count,
+                timeout,
+                deadline,
             )
 
     for red_path in red_lines:
+        check_timeout(timeout, deadline)
         result.tested_red_paths += 1
         outcome = search_single_red_path(
             code,
@@ -1642,6 +1772,8 @@ def find_simplification(
             ban_heuristic,
             require_applicable,
             result.path_search_mode,
+            timeout=timeout,
+            _timeout_deadline=deadline,
         )
         result.tested_green_paths += outcome.tested_green_paths
         if outcome.found:
@@ -1861,145 +1993,182 @@ def reduce_pd_code(
     ban_heuristic: bool = False,
     reduction_round: int = -1,
     max_thread: int = -1,
+    timeout: int = -1,
     verbose: bool = False,
     progress: Optional[Callable[[str], None]] = None,
+    _timeout_deadline: Optional[float] = None,
 ) -> ReductionResult:
     if max_thread < -1 or max_thread == 0:
         raise ValueError("max_thread must be -1 or a positive integer")
-    _emit_progress(
-        verbose,
-        progress,
-        (
-            f"start input_crossings={len(code)} "
-            f"known_crossingless_components={known_crossingless_components} "
-            f"reduction_round={reduction_round} max_paths={max_paths} "
-            f"max_thread={max_thread} "
-            f"heuristic={'off' if ban_heuristic else 'on'}"
-        ),
-    )
-    prepared = simplify_pd_code(code, known_crossingless_components)
+    deadline = timeout_deadline(timeout, _timeout_deadline)
     output = ReductionResult(
-        code=prepared.code,
-        crossingless_components=prepared.crossingless_components,
-        reidemeister_i_moves=prepared.reidemeister_i_moves,
-        nugatory_crossing_moves=prepared.nugatory_crossing_moves,
+        code=[list(crossing) for crossing in code],
+        crossingless_components=known_crossingless_components,
     )
-    _emit_progress(
-        verbose,
-        progress,
-        (
-            f"pre_simplify input_crossings={len(code)} "
-            f"output_crossings={len(output.code)} "
-            f"crossingless_components={output.crossingless_components} "
-            f"r1_moves={prepared.reidemeister_i_moves} "
-            f"nugatory_moves={prepared.nugatory_crossing_moves}"
-        ),
-    )
-
-    while reduction_round < 0 or output.mid_simplification_rounds < reduction_round:
-        round_index = output.mid_simplification_rounds + 1
+    try:
+        check_timeout(timeout, deadline)
         _emit_progress(
             verbose,
             progress,
             (
-                f"round {round_index} search_start crossings={len(output.code)} "
-                f"mode={_search_mode(max_paths, ban_heuristic)} "
-                f"max_thread={max_thread}"
+                f"start input_crossings={len(code)} "
+                f"known_crossingless_components={known_crossingless_components} "
+                f"reduction_round={reduction_round} max_paths={max_paths} "
+                f"max_thread={max_thread} timeout={timeout} "
+                f"heuristic={'off' if ban_heuristic else 'on'}"
             ),
         )
-        search = find_simplification(
-            output.code,
-            max_paths=max_paths,
-            ban_heuristic=ban_heuristic,
-            require_applicable=True,
-            max_thread=max_thread,
-        )
-        output.tested_red_paths += search.tested_red_paths
-        output.tested_green_paths += search.tested_green_paths
-        output.last_path_search_mode = search.path_search_mode
-        _emit_progress(
-            verbose,
-            progress,
-            (
-                f"round {round_index} search_done found={'yes' if search.found else 'no'} "
-                f"mode={search.path_search_mode} "
-                f"tested_red={search.tested_red_paths} "
-                f"tested_green={search.tested_green_paths}"
-            ),
-        )
-
-        if (
-            not search.found
-            and reduction_round < 0
-            and max_paths == -1
-            and not ban_heuristic
-        ):
-            _emit_progress(
-                verbose,
-                progress,
-                (
-                    f"round {round_index} brute_fallback_start "
-                    f"crossings={len(output.code)} max_thread={max_thread}"
-                ),
-            )
-            brute = find_simplification(
-                output.code,
-                max_paths=-1,
-                ban_heuristic=True,
-                require_applicable=True,
-                max_thread=max_thread,
-            )
-            output.tested_red_paths += brute.tested_red_paths
-            output.tested_green_paths += brute.tested_green_paths
-            output.last_path_search_mode = brute.path_search_mode
-            _emit_progress(
-                verbose,
-                progress,
-                (
-                    f"round {round_index} brute_fallback_done "
-                    f"found={'yes' if brute.found else 'no'} "
-                    f"tested_red={brute.tested_red_paths} "
-                    f"tested_green={brute.tested_green_paths}"
-                ),
-            )
-            if brute.found:
-                output.heuristic_failover_rounds += 1
-                search = brute
-
-        if not search.found:
-            _emit_progress(
-                verbose,
-                progress,
-                f"round {round_index} stop_no_path crossings={len(output.code)}",
-            )
-            break
-
-        before_apply_crossings = len(output.code)
-        reduced_code, reduced_crossingless = apply_simplification_witness(
-            output.code,
-            search,
-            output.crossingless_components,
-        )
-        output.mid_simplification_rounds += 1
-        prepared = simplify_pd_code(reduced_code, reduced_crossingless)
+        prepared = simplify_pd_code(code, known_crossingless_components)
         output.code = prepared.code
         output.crossingless_components = prepared.crossingless_components
-        output.reidemeister_i_moves += prepared.reidemeister_i_moves
-        output.nugatory_crossing_moves += prepared.nugatory_crossing_moves
+        output.reidemeister_i_moves = prepared.reidemeister_i_moves
+        output.nugatory_crossing_moves = prepared.nugatory_crossing_moves
+        check_timeout(timeout, deadline)
         _emit_progress(
             verbose,
             progress,
             (
-                f"round {round_index} applied crossings={before_apply_crossings} "
-                f"-> {len(reduced_code)} -> {len(output.code)} "
+                f"pre_simplify input_crossings={len(code)} "
+                f"output_crossings={len(output.code)} "
                 f"crossingless_components={output.crossingless_components} "
                 f"r1_moves={prepared.reidemeister_i_moves} "
                 f"nugatory_moves={prepared.nugatory_crossing_moves}"
             ),
         )
 
+        while reduction_round < 0 or output.mid_simplification_rounds < reduction_round:
+            check_timeout(timeout, deadline)
+            round_index = output.mid_simplification_rounds + 1
+            output.last_path_search_mode = _search_mode(max_paths, ban_heuristic)
+            _emit_progress(
+                verbose,
+                progress,
+                (
+                    f"round {round_index} search_start crossings={len(output.code)} "
+                    f"mode={output.last_path_search_mode} "
+                    f"max_thread={max_thread}"
+                ),
+            )
+            search = find_simplification(
+                output.code,
+                max_paths=max_paths,
+                ban_heuristic=ban_heuristic,
+                require_applicable=True,
+                max_thread=max_thread,
+                verbose=verbose,
+                progress=progress,
+                timeout=timeout,
+                _timeout_deadline=deadline,
+            )
+            output.tested_red_paths += search.tested_red_paths
+            output.tested_green_paths += search.tested_green_paths
+            output.last_path_search_mode = search.path_search_mode
+            _emit_progress(
+                verbose,
+                progress,
+                (
+                    f"round {round_index} search_done found={'yes' if search.found else 'no'} "
+                    f"mode={search.path_search_mode} "
+                    f"tested_red={search.tested_red_paths} "
+                    f"tested_green={search.tested_green_paths}"
+                ),
+            )
+
+            if (
+                not search.found
+                and reduction_round < 0
+                and max_paths == -1
+                and not ban_heuristic
+            ):
+                output.last_path_search_mode = _search_mode(-1, True)
+                _emit_progress(
+                    verbose,
+                    progress,
+                    (
+                        f"round {round_index} brute_fallback_start "
+                        f"crossings={len(output.code)} max_thread={max_thread}"
+                    ),
+                )
+                brute = find_simplification(
+                    output.code,
+                    max_paths=-1,
+                    ban_heuristic=True,
+                    require_applicable=True,
+                    max_thread=max_thread,
+                    verbose=verbose,
+                    progress=progress,
+                    timeout=timeout,
+                    _timeout_deadline=deadline,
+                )
+                output.tested_red_paths += brute.tested_red_paths
+                output.tested_green_paths += brute.tested_green_paths
+                output.last_path_search_mode = brute.path_search_mode
+                _emit_progress(
+                    verbose,
+                    progress,
+                    (
+                        f"round {round_index} brute_fallback_done "
+                        f"found={'yes' if brute.found else 'no'} "
+                        f"tested_red={brute.tested_red_paths} "
+                        f"tested_green={brute.tested_green_paths}"
+                    ),
+                )
+                if brute.found:
+                    output.heuristic_failover_rounds += 1
+                    search = brute
+
+            if not search.found:
+                _emit_progress(
+                    verbose,
+                    progress,
+                    f"round {round_index} stop_no_path crossings={len(output.code)}",
+                )
+                break
+
+            before_apply_crossings = len(output.code)
+            check_timeout(timeout, deadline)
+            reduced_code, reduced_crossingless = apply_simplification_witness(
+                output.code,
+                search,
+                output.crossingless_components,
+            )
+            output.mid_simplification_rounds += 1
+            output.code = reduced_code
+            output.crossingless_components = reduced_crossingless
+            check_timeout(timeout, deadline)
+            prepared = simplify_pd_code(output.code, output.crossingless_components)
+            output.code = prepared.code
+            output.crossingless_components = prepared.crossingless_components
+            output.reidemeister_i_moves += prepared.reidemeister_i_moves
+            output.nugatory_crossing_moves += prepared.nugatory_crossing_moves
+            check_timeout(timeout, deadline)
+            _emit_progress(
+                verbose,
+                progress,
+                (
+                    f"round {round_index} applied crossings={before_apply_crossings} "
+                    f"-> {len(reduced_code)} -> {len(output.code)} "
+                    f"crossingless_components={output.crossingless_components} "
+                    f"r1_moves={prepared.reidemeister_i_moves} "
+                    f"nugatory_moves={prepared.nugatory_crossing_moves}"
+                ),
+            )
+    except PdCodeSimplifyTimeoutError as exc:
+        output.timed_out = True
+        _emit_progress(
+            verbose,
+            progress,
+            (
+                f"{exc}; returning_current_best crossings={len(output.code)} "
+                f"crossingless_components={output.crossingless_components} "
+                f"mid_rounds={output.mid_simplification_rounds}"
+            ),
+        )
+
     output.stopped_by_round_limit = (
-        reduction_round >= 0 and output.mid_simplification_rounds >= reduction_round
+        not output.timed_out
+        and reduction_round >= 0
+        and output.mid_simplification_rounds >= reduction_round
     )
     _emit_progress(
         verbose,
@@ -2009,7 +2178,8 @@ def reduce_pd_code(
             f"crossingless_components={output.crossingless_components} "
             f"mid_rounds={output.mid_simplification_rounds} "
             f"heuristic_failover_rounds={output.heuristic_failover_rounds} "
-            f"stopped_by_round_limit={'yes' if output.stopped_by_round_limit else 'no'}"
+            f"stopped_by_round_limit={'yes' if output.stopped_by_round_limit else 'no'} "
+            f"timed_out={'yes' if output.timed_out else 'no'}"
         ),
     )
     return output
@@ -2115,6 +2285,7 @@ def run_job(
     ban_heuristic: bool = False,
     reduction_round: int = -1,
     max_thread: int = -1,
+    timeout: int = -1,
     known_crossingless_components: int = 0,
     removed_crossings: Optional[Sequence[int]] = None,
     verbose: bool = False,
@@ -2140,6 +2311,7 @@ def run_job(
             ban_heuristic=ban_heuristic,
             reduction_round=reduction_round,
             max_thread=max_thread,
+            timeout=timeout,
             verbose=verbose,
             progress=lambda message: print(
                 format_progress_log(f"{job.label}: {message}"), file=sys.stderr
@@ -2183,6 +2355,7 @@ def print_text_result(
     print(f"tested_green_paths: {result.tested_green_paths}")
     print(f"last_path_search_mode: {result.last_path_search_mode}")
     print(f"stopped_by_round_limit: {'yes' if result.stopped_by_round_limit else 'no'}")
+    print(f"timed_out: {'yes' if result.timed_out else 'no'}")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -2210,6 +2383,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=-1,
         help="maximum mid-simplification rounds, or -1 to continue until stable",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=-1,
+        help="per-PD-code timeout in seconds, or -1 for no timeout",
     )
     parser.add_argument(
         "--known-crossingless-components",
@@ -2269,10 +2448,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error("--reduction-round must be -1 or a non-negative integer")
     if args.max_thread < -1 or args.max_thread == 0:
         parser.error("--max-thread must be -1 or a positive integer")
+    if args.timeout < -1 or args.timeout == 0:
+        parser.error("--timeout must be -1 or a positive integer")
     jobs = collect_jobs(args)
     removed_crossings = parse_removed_crossings(args.remove_crossings)
     show_labels = len(jobs) > 1
     had_error = False
+    interrupted = False
 
     if args.json:
         payload = []
@@ -2284,6 +2466,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ban_heuristic=args.ban_heuristic,
                     reduction_round=args.reduction_round,
                     max_thread=args.max_thread,
+                    timeout=args.timeout,
                     known_crossingless_components=args.known_crossingless_components,
                     removed_crossings=removed_crossings,
                     verbose=args.verbose,
@@ -2299,6 +2482,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         label=job.label if show_labels else None,
                     )
                 )
+                if result.timed_out:
+                    had_error = True
+            except KeyboardInterrupt:
+                had_error = True
+                interrupted = True
+                item = {"error": "interrupted by Ctrl+C"}
+                if show_labels:
+                    item["label"] = job.label
+                payload.append(item)
+                break
             except Exception as exc:
                 had_error = True
                 item: Dict[str, object] = {"error": str(exc)}
@@ -2317,16 +2510,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ban_heuristic=args.ban_heuristic,
                     reduction_round=args.reduction_round,
                     max_thread=args.max_thread,
+                    timeout=args.timeout,
                     known_crossingless_components=args.known_crossingless_components,
                     removed_crossings=removed_crossings,
                     verbose=args.verbose,
                 )
                 print_text_result(result, input_components, after_removal)
+                if result.timed_out:
+                    had_error = True
+            except KeyboardInterrupt:
+                had_error = True
+                interrupted = True
+                print("error: interrupted by Ctrl+C")
+                break
             except Exception as exc:
                 had_error = True
                 print(f"error: {exc}")
             if show_labels and index + 1 < len(jobs):
                 print()
+    if interrupted:
+        return 130
     if had_error:
         return 2
     return 0

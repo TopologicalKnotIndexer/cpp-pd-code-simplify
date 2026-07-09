@@ -78,6 +78,15 @@ def main() -> int:
 
     zero_based_trefoil = interface.simplify(ZERO_BASED_TREFOIL, reduction_round=0)
     assert zero_based_trefoil["final_pd_code"] == TREFOIL
+    timed_trefoil = interface.simplify(TREFOIL, reduction_round=0, timeout=1)
+    assert timed_trefoil["final_pd_code"] == TREFOIL
+    assert timed_trefoil["timed_out"] is False
+    try:
+        interface.simplify(TREFOIL, timeout=0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("timeout=0 should be rejected")
 
     orientation_repair = interface.simplify(ORIENTATION_REPAIR, reduction_round=0)
     assert (

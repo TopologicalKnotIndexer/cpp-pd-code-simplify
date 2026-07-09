@@ -95,6 +95,7 @@ component.
 --max-paths N                  Cap accepted green paths; default -1.
 --ban-heuristic                With --max-paths -1, enumerate all green paths.
 --reduction-round K            Maximum mid-simplification rounds; -1 means until stable.
+--timeout K                    Per-PD-code timeout in seconds; -1 means no timeout.
 --verbose                      Print timestamped progress logs to stderr.
 --known-crossingless-components N
                                Add N components not representable in PD code.
@@ -113,7 +114,15 @@ longer find an applicable path, the executable runs one brute-force
 enumeration pass before declaring the diagram stable. Use
 `--reduction-round K` to cap the number of applied mid-simplification rounds.
 Verbose log lines are prefixed with local wall-clock time in
-`YYYY-MM-DD HH:MM:SS` format.
+`YYYY-MM-DD HH:MM:SS` format. When `--max-thread -1` reaches a brute-force
+search phase, verbose logs also include `actual_threads`, the worker count
+selected for that phase.
+
+`--timeout -1` is the default and disables time limits. `--timeout K`, where
+`K` is a positive integer, stops the current PD-code job after approximately
+`K` seconds and still prints the best PD code found so far. JSON and text
+output include `timed_out`; in batch mode, later jobs continue. Pressing
+`Ctrl+C` requests cooperative cancellation and exits with status `130`.
 
 ## Component Accounting
 
@@ -135,10 +144,10 @@ R1-move removal followed by nugatory-crossing removal is enabled by default.
 Batch mode keeps going after a single input fails; failed items are reported
 with an `error` field in JSON output or an `error:` line in text output.
 
-The process exits with code `0` when every input is processed successfully,
-including inputs that are already stable. It exits with code `2` when at
-least one input reports an error. In batch mode, errors are isolated to the
-failing item and later PD codes still run.
+The process exits with code `0` when every input reaches a non-timed-out
+result, including inputs that are already stable. It exits with code `2` when
+at least one input reports an error or `timed_out: true`. In batch mode, errors
+and timeouts are isolated to the affected item and later PD codes still run.
 
 ## C++ Library Use
 

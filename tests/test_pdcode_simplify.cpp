@@ -1,5 +1,6 @@
 #include "pdcode_simplify/pdcode_simplify.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -78,6 +79,43 @@ void test_link_components() {
 
     require(components.total_components() == 2, "sample link should have two components");
     require(components.components_with_crossings() == 2, "both sample link components should have crossings");
+}
+
+void test_verbose_auto_thread_log() {
+    const auto trefoil = pdcode_simplify::parse_pd_code(
+        "[(1,5,2,4),(3,1,4,6),(5,3,6,2)]");
+    std::string log;
+    pdcode_simplify::SimplifierOptions options;
+    options.max_paths = -1;
+    options.ban_heuristic = true;
+    options.max_threads = -1;
+    options.verbose = true;
+    options.progress = [&](const std::string& message) {
+        log += message;
+        log += '\n';
+    };
+
+    (void)pdcode_simplify::reduce_pd_code(trefoil, 0, options, 1);
+    require(
+        log.find("bruteforce_threads max_thread=-1") != std::string::npos,
+        "verbose auto-thread log should be emitted in brute-force mode");
+    require(
+        log.find("actual_threads=") != std::string::npos,
+        "verbose auto-thread log should include the actual worker count");
+}
+
+void test_timeout_deadline() {
+    const auto trefoil = pdcode_simplify::parse_pd_code(
+        "[(1,5,2,4),(3,1,4,6),(5,3,6,2)]");
+    pdcode_simplify::SimplifierOptions options;
+    options.timeout_seconds = 1;
+    options.has_timeout_deadline = true;
+    options.timeout_deadline =
+        std::chrono::steady_clock::now() - std::chrono::seconds(1);
+
+    const auto result = pdcode_simplify::reduce_pd_code(trefoil, 0, options, -1);
+    require(result.timed_out, "expired timeout deadline should return a timed-out result");
+    require(result.code.size() == trefoil.size(), "timed-out result should keep the current best PD code");
 }
 
 void test_crossingless_component_count_after_removal() {
@@ -241,6 +279,8 @@ int main() {
         test_invalid_code();
         test_common_knot_components();
         test_link_components();
+        test_verbose_auto_thread_log();
+        test_timeout_deadline();
         test_crossingless_component_count_after_removal();
         test_r1_random_inflate_then_pre_simplify();
         test_reference_sample();

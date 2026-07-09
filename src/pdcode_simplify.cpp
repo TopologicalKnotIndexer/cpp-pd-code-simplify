@@ -1,6 +1,7 @@
 #include "pdcode_simplify/pdcode_simplify.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdlib>
 #include <deque>
@@ -987,7 +988,10 @@ std::set<int> normalized_removed_crossings(const PDCode& code, const std::vector
 std::vector<int> heuristic_distances_to_target(
     const DualGraph& graph,
     int target,
-    int cutoff);
+    int cutoff,
+    const SimplifierOptions& options);
+
+void check_timeout(const SimplifierOptions& options);
 
 void collect_simple_paths_dfs(
     const DualGraph& graph,
@@ -999,7 +1003,9 @@ void collect_simple_paths_dfs(
     const std::vector<int>& distance,
     std::vector<char>& visited,
     std::vector<int>& current_path,
-    std::vector<std::vector<int>>& paths) {
+    std::vector<std::vector<int>>& paths,
+    const SimplifierOptions& options) {
+    check_timeout(options);
     const int infinity = std::numeric_limits<int>::max() / 4;
     if (static_cast<int>(current_path.size()) - 1 >= cutoff) {
         return;
@@ -1045,7 +1051,8 @@ void collect_simple_paths_dfs(
                 distance,
                 visited,
                 current_path,
-                paths);
+                paths,
+                options);
             if (max_paths != -1 && static_cast<int>(paths.size()) > max_paths) {
                 visited[next] = false;
                 current_path.pop_back();
@@ -1063,7 +1070,9 @@ std::vector<std::vector<int>> collect_simple_paths(
     int source,
     int target,
     int cutoff,
-    int max_paths) {
+    int max_paths,
+    const SimplifierOptions& options) {
+    check_timeout(options);
     std::vector<std::vector<int>> paths;
     if (source == target || source < 0 || target < 0 ||
         source >= static_cast<int>(graph.faces.size()) ||
@@ -1074,7 +1083,7 @@ std::vector<std::vector<int>> collect_simple_paths(
 
     std::vector<char> visited(graph.faces.size(), false);
     std::vector<int> current_path{source};
-    const std::vector<int> distance = heuristic_distances_to_target(graph, target, cutoff);
+    const std::vector<int> distance = heuristic_distances_to_target(graph, target, cutoff, options);
     visited[source] = true;
     collect_simple_paths_dfs(
         graph,
@@ -1086,14 +1095,16 @@ std::vector<std::vector<int>> collect_simple_paths(
         distance,
         visited,
         current_path,
-        paths);
+        paths,
+        options);
     return paths;
 }
 
 std::vector<int> heuristic_distances_to_target(
     const DualGraph& graph,
     int target,
-    int cutoff) {
+    int cutoff,
+    const SimplifierOptions& options) {
     const int face_count = static_cast<int>(graph.faces.size());
     const int infinity = std::numeric_limits<int>::max() / 4;
     std::vector<int> distance(face_count, infinity);
@@ -1102,6 +1113,7 @@ std::vector<int> heuristic_distances_to_target(
     queue.push_back(target);
 
     while (!queue.empty()) {
+        check_timeout(options);
         const int current = queue.front();
         queue.pop_front();
         for (int edge_index : graph.adjacency[current]) {
@@ -1179,7 +1191,9 @@ std::vector<std::vector<int>> collect_heuristic_paths(
     const DualGraph& graph,
     int source,
     int target,
-    int cutoff) {
+    int cutoff,
+    const SimplifierOptions& options) {
+    check_timeout(options);
     std::vector<std::vector<int>> paths;
     const int face_count = static_cast<int>(graph.faces.size());
     if (source == target || source < 0 || target < 0 ||
@@ -1187,7 +1201,7 @@ std::vector<std::vector<int>> collect_heuristic_paths(
         return paths;
     }
 
-    const std::vector<int> distance = heuristic_distances_to_target(graph, target, cutoff);
+    const std::vector<int> distance = heuristic_distances_to_target(graph, target, cutoff, options);
     const int infinity = std::numeric_limits<int>::max() / 4;
     if (distance[source] == infinity || distance[source] >= cutoff) {
         return paths;
@@ -1215,6 +1229,7 @@ std::vector<std::vector<int>> collect_heuristic_paths(
     int popped_states = 0;
     while (!queue.empty() && popped_states < state_budget &&
            static_cast<int>(paths.size()) < path_budget) {
+        check_timeout(options);
         HeuristicState state = queue.top();
         queue.pop();
         ++popped_states;
@@ -1823,6 +1838,41 @@ std::string search_mode_for_options(const SimplifierOptions& options) {
     return "bounded";
 }
 
+void validate_timeout_options(const SimplifierOptions& options) {
+    if (options.timeout_seconds < -1 || options.timeout_seconds == 0) {
+        throw std::invalid_argument("timeout must be -1 or a positive integer");
+    }
+}
+
+class TimeoutError : public std::runtime_error {
+public:
+    explicit TimeoutError(const std::string& message) : std::runtime_error(message) {}
+};
+
+SimplifierOptions with_timeout_deadline(SimplifierOptions options) {
+    validate_timeout_options(options);
+    if (options.timeout_seconds > 0 && !options.has_timeout_deadline) {
+        options.has_timeout_deadline = true;
+        options.timeout_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(options.timeout_seconds);
+    }
+    return options;
+}
+
+void check_timeout(const SimplifierOptions& options) {
+    if (options.should_cancel && options.should_cancel()) {
+        throw std::runtime_error("interrupted by Ctrl+C");
+    }
+    if (!options.has_timeout_deadline) {
+        return;
+    }
+    if (std::chrono::steady_clock::now() >= options.timeout_deadline) {
+        std::ostringstream message;
+        message << "timeout after " << options.timeout_seconds << " seconds";
+        throw TimeoutError(message.str());
+    }
+}
+
 }  // namespace
 
 PDCode parse_pd_code(const std::string& text) {
@@ -2213,6 +2263,7 @@ RedPathSearchOutcome search_single_red_path(
     const std::string& path_search_mode,
     int red_index,
     const std::atomic<int>* best_found_index) {
+    check_timeout(options);
     RedPathSearchOutcome outcome;
     outcome.witness.path_search_mode = path_search_mode;
     if (should_skip_parallel_red_path(red_index, best_found_index)) {
@@ -2231,6 +2282,7 @@ RedPathSearchOutcome search_single_red_path(
     const std::array<int, 2> destinations{end_face, end_opposite_face};
 
     for (std::size_t i = 1; i + 1 < red_path.size(); ++i) {
+        check_timeout(options);
         const Endpoint endpoint = red_path[i];
         const int right_region = graph.edge_to_face[endpoint_key(endpoint)];
         const int left_region = graph.edge_to_face[endpoint_key(diagram.opposite(endpoint))];
@@ -2243,15 +2295,17 @@ RedPathSearchOutcome search_single_red_path(
     const int cutoff = static_cast<int>(red_path.size()) - 1;
     for (int source : sources) {
         for (int destination : destinations) {
+            check_timeout(options);
             if (should_skip_parallel_red_path(red_index, best_found_index)) {
                 outcome.skipped = true;
                 return outcome;
             }
             std::vector<std::vector<int>> found_paths;
             if (options.max_paths == -1 && !options.ban_heuristic) {
-                found_paths = collect_heuristic_paths(graph, source, destination, cutoff);
+                found_paths = collect_heuristic_paths(graph, source, destination, cutoff, options);
             } else {
-                found_paths = collect_simple_paths(graph, source, destination, cutoff, options.max_paths);
+                found_paths = collect_simple_paths(
+                    graph, source, destination, cutoff, options.max_paths, options);
             }
             paths.insert(paths.end(), found_paths.begin(), found_paths.end());
             if (options.max_paths != -1 && static_cast<int>(paths.size()) > options.max_paths) {
@@ -2261,6 +2315,7 @@ RedPathSearchOutcome search_single_red_path(
     }
 
     for (const auto& green_path : paths) {
+        check_timeout(options);
         if (should_skip_parallel_red_path(red_index, best_found_index)) {
             outcome.skipped = true;
             return outcome;
@@ -2401,36 +2456,49 @@ SimplificationResult find_simplification_parallel_bruteforce(
 SimplificationResult find_simplification(
     const PDCode& code,
     const SimplifierOptions& options) {
+    const SimplifierOptions run_options = with_timeout_deadline(options);
+    check_timeout(run_options);
     SimplificationResult result;
-    result.path_search_mode = search_mode_for_options(options);
+    result.path_search_mode = search_mode_for_options(run_options);
     Diagram diagram(code);
+    check_timeout(run_options);
     DualGraph base_graph(diagram);
+    check_timeout(run_options);
     const auto red_lines = possible_red_lines(diagram);
-    const bool brute_force_mode = options.max_paths == -1 && options.ban_heuristic;
+    check_timeout(run_options);
+    const bool brute_force_mode = run_options.max_paths == -1 && run_options.ban_heuristic;
     const int worker_count = brute_force_mode
         ? selected_bruteforce_worker_count(
-              options.max_threads,
+              run_options.max_threads,
               static_cast<int>(red_lines.size()))
         : 1;
+    if (brute_force_mode && run_options.max_threads == -1) {
+        std::ostringstream message;
+        message << "bruteforce_threads max_thread=-1"
+                << " actual_threads=" << worker_count
+                << " red_paths=" << red_lines.size();
+        emit_progress(run_options, message.str());
+    }
     if (worker_count > 1) {
         return find_simplification_parallel_bruteforce(
             code,
             diagram,
             base_graph,
             red_lines,
-            options,
+            run_options,
             result.path_search_mode,
             worker_count);
     }
 
     for (const auto& red_path : red_lines) {
+        check_timeout(run_options);
         ++result.tested_red_paths;
         const RedPathSearchOutcome outcome = search_single_red_path(
             code,
             diagram,
             base_graph,
             red_path,
-            options,
+            run_options,
             result.path_search_mode,
             -1,
             nullptr);
@@ -2452,125 +2520,155 @@ ReductionResult reduce_pd_code(
     std::size_t known_crossingless_components,
     const SimplifierOptions& options,
     int reduction_round) {
-    {
-        std::ostringstream message;
-        message << "start input_crossings=" << code.size()
-                << " known_crossingless_components=" << known_crossingless_components
-                << " reduction_round=" << reduction_round
-                << " max_paths=" << options.max_paths
-                << " max_thread=" << options.max_threads
-                << " heuristic=" << (options.ban_heuristic ? "off" : "on");
-        emit_progress(options, message.str());
-    }
-
-    const PDSimplificationResult prepared = simplify_pd_code(code, known_crossingless_components);
+    const SimplifierOptions run_options = with_timeout_deadline(options);
     ReductionResult output;
-    output.code = prepared.code;
-    output.crossingless_components = prepared.crossingless_components;
-    output.reidemeister_i_moves = prepared.reidemeister_i_moves;
-    output.nugatory_crossing_moves = prepared.nugatory_crossing_moves;
-    {
-        std::ostringstream message;
-        message << "pre_simplify input_crossings=" << code.size()
-                << " output_crossings=" << output.code.size()
-                << " crossingless_components=" << output.crossingless_components
-                << " r1_moves=" << prepared.reidemeister_i_moves
-                << " nugatory_moves=" << prepared.nugatory_crossing_moves;
-        emit_progress(options, message.str());
-    }
+    output.code = code;
+    output.crossingless_components = known_crossingless_components;
 
-    while (reduction_round < 0 || output.mid_simplification_rounds < reduction_round) {
-        SimplifierOptions search_options = options;
-        search_options.require_applicable = true;
-        const int round = output.mid_simplification_rounds + 1;
+    try {
+        check_timeout(run_options);
         {
             std::ostringstream message;
-            message << "round " << round
-                    << " search_start crossings=" << output.code.size()
-                    << " mode=" << search_mode_for_options(search_options)
-                    << " max_thread=" << search_options.max_threads;
-            emit_progress(options, message.str());
+            message << "start input_crossings=" << code.size()
+                    << " known_crossingless_components=" << known_crossingless_components
+                    << " reduction_round=" << reduction_round
+                    << " max_paths=" << run_options.max_paths
+                    << " max_thread=" << run_options.max_threads
+                    << " timeout=" << run_options.timeout_seconds
+                    << " heuristic=" << (run_options.ban_heuristic ? "off" : "on");
+            emit_progress(run_options, message.str());
         }
-        SimplificationResult search = find_simplification(output.code, search_options);
-        output.tested_red_paths += search.tested_red_paths;
-        output.tested_green_paths += search.tested_green_paths;
-        output.last_path_search_mode = search.path_search_mode;
+
+        const PDSimplificationResult prepared =
+            simplify_pd_code(code, known_crossingless_components);
+        output.code = prepared.code;
+        output.crossingless_components = prepared.crossingless_components;
+        output.reidemeister_i_moves = prepared.reidemeister_i_moves;
+        output.nugatory_crossing_moves = prepared.nugatory_crossing_moves;
+        check_timeout(run_options);
         {
             std::ostringstream message;
-            message << "round " << round
-                    << " search_done found=" << (search.found ? "yes" : "no")
-                    << " mode=" << search.path_search_mode
-                    << " tested_red=" << search.tested_red_paths
-                    << " tested_green=" << search.tested_green_paths;
-            emit_progress(options, message.str());
-        }
-
-        if (!search.found && reduction_round < 0 &&
-            options.max_paths == -1 && !options.ban_heuristic) {
-            SimplifierOptions brute_options = options;
-            brute_options.max_paths = -1;
-            brute_options.ban_heuristic = true;
-            brute_options.require_applicable = true;
-            {
-                std::ostringstream message;
-                message << "round " << round
-                        << " brute_fallback_start crossings=" << output.code.size()
-                        << " max_thread=" << brute_options.max_threads;
-                emit_progress(options, message.str());
-            }
-            SimplificationResult brute = find_simplification(output.code, brute_options);
-            output.tested_red_paths += brute.tested_red_paths;
-            output.tested_green_paths += brute.tested_green_paths;
-            output.last_path_search_mode = brute.path_search_mode;
-            {
-                std::ostringstream message;
-                message << "round " << round
-                        << " brute_fallback_done found=" << (brute.found ? "yes" : "no")
-                        << " tested_red=" << brute.tested_red_paths
-                        << " tested_green=" << brute.tested_green_paths;
-                emit_progress(options, message.str());
-            }
-            if (brute.found) {
-                ++output.heuristic_failover_rounds;
-                search = std::move(brute);
-            }
-        }
-
-        if (!search.found) {
-            {
-                std::ostringstream message;
-                message << "round " << round
-                        << " stop_no_path crossings=" << output.code.size();
-                emit_progress(options, message.str());
-            }
-            break;
-        }
-
-        const std::size_t before_apply_crossings = output.code.size();
-        const MidSimplificationApplyResult applied =
-            apply_simplification_witness(output.code, search, output.crossingless_components);
-        ++output.mid_simplification_rounds;
-        const PDSimplificationResult simplified =
-            simplify_pd_code(applied.code, applied.crossingless_components);
-        output.code = simplified.code;
-        output.crossingless_components = simplified.crossingless_components;
-        output.reidemeister_i_moves += simplified.reidemeister_i_moves;
-        output.nugatory_crossing_moves += simplified.nugatory_crossing_moves;
-        {
-            std::ostringstream message;
-            message << "round " << round
-                    << " applied crossings=" << before_apply_crossings
-                    << " -> " << applied.code.size()
-                    << " -> " << output.code.size()
+            message << "pre_simplify input_crossings=" << code.size()
+                    << " output_crossings=" << output.code.size()
                     << " crossingless_components=" << output.crossingless_components
-                    << " r1_moves=" << simplified.reidemeister_i_moves
-                    << " nugatory_moves=" << simplified.nugatory_crossing_moves;
-            emit_progress(options, message.str());
+                    << " r1_moves=" << prepared.reidemeister_i_moves
+                    << " nugatory_moves=" << prepared.nugatory_crossing_moves;
+            emit_progress(run_options, message.str());
+        }
+
+        while (reduction_round < 0 || output.mid_simplification_rounds < reduction_round) {
+            check_timeout(run_options);
+            SimplifierOptions search_options = run_options;
+            search_options.require_applicable = true;
+            output.last_path_search_mode = search_mode_for_options(search_options);
+            const int round = output.mid_simplification_rounds + 1;
+            {
+                std::ostringstream message;
+                message << "round " << round
+                        << " search_start crossings=" << output.code.size()
+                        << " mode=" << output.last_path_search_mode
+                        << " max_thread=" << search_options.max_threads;
+                emit_progress(run_options, message.str());
+            }
+            SimplificationResult search = find_simplification(output.code, search_options);
+            output.tested_red_paths += search.tested_red_paths;
+            output.tested_green_paths += search.tested_green_paths;
+            output.last_path_search_mode = search.path_search_mode;
+            {
+                std::ostringstream message;
+                message << "round " << round
+                        << " search_done found=" << (search.found ? "yes" : "no")
+                        << " mode=" << search.path_search_mode
+                        << " tested_red=" << search.tested_red_paths
+                        << " tested_green=" << search.tested_green_paths;
+                emit_progress(run_options, message.str());
+            }
+
+            if (!search.found && reduction_round < 0 &&
+                run_options.max_paths == -1 && !run_options.ban_heuristic) {
+                SimplifierOptions brute_options = run_options;
+                brute_options.max_paths = -1;
+                brute_options.ban_heuristic = true;
+                brute_options.require_applicable = true;
+                output.last_path_search_mode = search_mode_for_options(brute_options);
+                {
+                    std::ostringstream message;
+                    message << "round " << round
+                            << " brute_fallback_start crossings=" << output.code.size()
+                            << " max_thread=" << brute_options.max_threads;
+                    emit_progress(run_options, message.str());
+                }
+                SimplificationResult brute = find_simplification(output.code, brute_options);
+                output.tested_red_paths += brute.tested_red_paths;
+                output.tested_green_paths += brute.tested_green_paths;
+                output.last_path_search_mode = brute.path_search_mode;
+                {
+                    std::ostringstream message;
+                    message << "round " << round
+                            << " brute_fallback_done found=" << (brute.found ? "yes" : "no")
+                            << " tested_red=" << brute.tested_red_paths
+                            << " tested_green=" << brute.tested_green_paths;
+                    emit_progress(run_options, message.str());
+                }
+                if (brute.found) {
+                    ++output.heuristic_failover_rounds;
+                    search = std::move(brute);
+                }
+            }
+
+            if (!search.found) {
+                {
+                    std::ostringstream message;
+                    message << "round " << round
+                            << " stop_no_path crossings=" << output.code.size();
+                    emit_progress(run_options, message.str());
+                }
+                break;
+            }
+
+            const std::size_t before_apply_crossings = output.code.size();
+            check_timeout(run_options);
+            const MidSimplificationApplyResult applied =
+                apply_simplification_witness(output.code, search, output.crossingless_components);
+            ++output.mid_simplification_rounds;
+            output.code = applied.code;
+            output.crossingless_components = applied.crossingless_components;
+            check_timeout(run_options);
+            const PDSimplificationResult simplified =
+                simplify_pd_code(output.code, output.crossingless_components);
+            output.code = simplified.code;
+            output.crossingless_components = simplified.crossingless_components;
+            output.reidemeister_i_moves += simplified.reidemeister_i_moves;
+            output.nugatory_crossing_moves += simplified.nugatory_crossing_moves;
+            check_timeout(run_options);
+            {
+                std::ostringstream message;
+                message << "round " << round
+                        << " applied crossings=" << before_apply_crossings
+                        << " -> " << applied.code.size()
+                        << " -> " << output.code.size()
+                        << " crossingless_components=" << output.crossingless_components
+                        << " r1_moves=" << simplified.reidemeister_i_moves
+                        << " nugatory_moves=" << simplified.nugatory_crossing_moves;
+                emit_progress(run_options, message.str());
+            }
+        }
+    } catch (const TimeoutError& error) {
+        output.timed_out = true;
+        {
+            std::ostringstream message;
+            message << error.what()
+                    << "; returning_current_best crossings=" << output.code.size()
+                    << " crossingless_components=" << output.crossingless_components
+                    << " mid_rounds=" << output.mid_simplification_rounds;
+            emit_progress(run_options, message.str());
         }
     }
 
     output.stopped_by_round_limit =
-        reduction_round >= 0 && output.mid_simplification_rounds >= reduction_round;
+        !output.timed_out &&
+        reduction_round >= 0 &&
+        output.mid_simplification_rounds >= reduction_round;
     {
         std::ostringstream message;
         message << "done final_crossings=" << output.code.size()
@@ -2578,8 +2676,9 @@ ReductionResult reduce_pd_code(
                 << " mid_rounds=" << output.mid_simplification_rounds
                 << " heuristic_failover_rounds=" << output.heuristic_failover_rounds
                 << " stopped_by_round_limit="
-                << (output.stopped_by_round_limit ? "yes" : "no");
-        emit_progress(options, message.str());
+                << (output.stopped_by_round_limit ? "yes" : "no")
+                << " timed_out=" << (output.timed_out ? "yes" : "no");
+        emit_progress(run_options, message.str());
     }
     return output;
 }

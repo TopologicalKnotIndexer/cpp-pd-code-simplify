@@ -762,6 +762,7 @@ def _load_library() -> ctypes.CDLL:
         ctypes.c_int,
         ctypes.c_int,
         ctypes.c_int,
+        ctypes.c_int,
         ctypes.c_ulonglong,
         ctypes.POINTER(ctypes.c_int),
         ctypes.c_ulonglong,
@@ -774,13 +775,14 @@ def _load_library() -> ctypes.CDLL:
     return library
 
 
-def _run_one(
+def _run_one_direct(
     pd_text: str,
     *,
     max_paths: int = -1,
     ban_heuristic: bool = False,
     reduction_round: int = -1,
     max_thread: int = -1,
+    timeout: int = -1,
     verbose: bool = False,
     known_crossingless_components: int = 0,
     remove_crossings: Optional[Sequence[int]] = None,
@@ -789,6 +791,8 @@ def _run_one(
         raise ValueError("reduction_round must be -1 or a non-negative integer")
     if max_thread < -1 or max_thread == 0:
         raise ValueError("max_thread must be -1 or a positive integer")
+    if timeout < -1 or timeout == 0:
+        raise ValueError("timeout must be -1 or a positive integer")
     library = _load_library()
     removed_count = 0 if remove_crossings is None else len(remove_crossings)
     removed_array = None
@@ -801,6 +805,7 @@ def _run_one(
         1 if ban_heuristic else 0,
         int(reduction_round),
         int(max_thread),
+        int(timeout),
         1 if verbose else 0,
         int(known_crossingless_components),
         removed_array,
@@ -822,6 +827,93 @@ def _run_one(
     return result
 
 
+def _terminate_process(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def _run_one(
+    pd_text: str,
+    *,
+    max_paths: int = -1,
+    ban_heuristic: bool = False,
+    reduction_round: int = -1,
+    max_thread: int = -1,
+    timeout: int = -1,
+    verbose: bool = False,
+    known_crossingless_components: int = 0,
+    remove_crossings: Optional[Sequence[int]] = None,
+) -> dict[str, Any]:
+    if reduction_round < -1:
+        raise ValueError("reduction_round must be -1 or a non-negative integer")
+    if max_thread < -1 or max_thread == 0:
+        raise ValueError("max_thread must be -1 or a positive integer")
+    if timeout < -1 or timeout == 0:
+        raise ValueError("timeout must be -1 or a positive integer")
+
+    request = {
+        "pd_text": pd_text,
+        "max_paths": int(max_paths),
+        "ban_heuristic": bool(ban_heuristic),
+        "reduction_round": int(reduction_round),
+        "max_thread": int(max_thread),
+        "timeout": int(timeout),
+        "verbose": bool(verbose),
+        "known_crossingless_components": int(known_crossingless_components),
+        "remove_crossings": [int(value) for value in remove_crossings or []],
+    }
+    env = os.environ.copy()
+    project_root = str(pathlib.Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "cpp_pd_code_simplify_interface._worker",
+        ],
+        cwd=str(pathlib.Path.cwd()),
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=None if verbose else subprocess.PIPE,
+        env=env,
+    )
+    try:
+        stdout, stderr = proc.communicate(json.dumps(request))
+    except KeyboardInterrupt:
+        _terminate_process(proc)
+        raise
+
+    if proc.returncode != 0:
+        detail = (stderr or "").strip()
+        raise PdCodeSimplifyInterfaceError(
+            f"C++ interface worker failed with exit code {proc.returncode}"
+            + (f": {detail}" if detail else "")
+        )
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise PdCodeSimplifyInterfaceError(
+            f"invalid interface worker JSON output: {stdout!r}"
+        ) from exc
+    if not isinstance(envelope, dict):
+        raise PdCodeSimplifyInterfaceError(
+            f"invalid interface worker response type: {type(envelope)!r}"
+        )
+    if not envelope.get("ok", False):
+        raise PdCodeSimplifyInterfaceError(str(envelope.get("error", "unknown worker error")))
+    result = envelope.get("result")
+    if not isinstance(result, dict):
+        raise PdCodeSimplifyInterfaceError("interface worker did not return a JSON object result")
+    return result
+
+
 def simplify(
     pd_code: PdInput,
     *,
@@ -829,6 +921,7 @@ def simplify(
     ban_heuristic: bool = False,
     reduction_round: int = -1,
     max_thread: int = -1,
+    timeout: int = -1,
     verbose: bool = False,
     known_crossingless_components: int = 0,
     remove_crossings: Optional[Sequence[int]] = None,
@@ -841,6 +934,7 @@ def simplify(
         ban_heuristic=ban_heuristic,
         reduction_round=reduction_round,
         max_thread=max_thread,
+        timeout=timeout,
         verbose=verbose,
         known_crossingless_components=known_crossingless_components,
         remove_crossings=remove_crossings,
@@ -854,6 +948,7 @@ def simplify_many(
     ban_heuristic: bool = False,
     reduction_round: int = -1,
     max_thread: int = -1,
+    timeout: int = -1,
     verbose: bool = False,
     known_crossingless_components: int = 0,
     remove_crossings: Optional[Sequence[int]] = None,
@@ -867,6 +962,7 @@ def simplify_many(
             ban_heuristic=ban_heuristic,
             reduction_round=reduction_round,
             max_thread=max_thread,
+            timeout=timeout,
             verbose=verbose,
             known_crossingless_components=known_crossingless_components,
             remove_crossings=remove_crossings,
@@ -884,6 +980,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--ban-heuristic", action="store_true")
     parser.add_argument("--reduction-round", type=int, default=-1)
     parser.add_argument("--max-thread", type=int, default=-1)
+    parser.add_argument("--timeout", type=int, default=-1)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--known-crossingless-components", type=int, default=0)
     parser.add_argument("--remove-crossings", help="comma-separated zero-based crossing indices")
@@ -892,6 +989,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error("--reduction-round must be -1 or a non-negative integer")
     if args.max_thread < -1 or args.max_thread == 0:
         parser.error("--max-thread must be -1 or a positive integer")
+    if args.timeout < -1 or args.timeout == 0:
+        parser.error("--timeout must be -1 or a positive integer")
     if args.pd_code and args.pd_code_option:
         parser.error("pass either a positional PD code or --pd-code, not both")
     pd_code_text = args.pd_code_option or args.pd_code
@@ -916,6 +1015,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     ban_heuristic=args.ban_heuristic,
                     reduction_round=args.reduction_round,
                     max_thread=args.max_thread,
+                    timeout=args.timeout,
                     verbose=args.verbose,
                     known_crossingless_components=args.known_crossingless_components,
                     remove_crossings=remove_crossings,
@@ -923,6 +1023,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if show_labels:
                     item = {"label": label, **item}
                 batch_payload.append(item)
+                if item.get("timed_out"):
+                    exit_code = 2
+            except KeyboardInterrupt:
+                exit_code = 130
+                item = {"error": "interrupted by Ctrl+C"}
+                if show_labels:
+                    item = {"label": label, **item}
+                batch_payload.append(item)
+                break
             except Exception as exc:
                 exit_code = 2
                 item = {"error": str(exc)}
@@ -931,16 +1040,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 batch_payload.append(item)
         payload: Any = batch_payload
     else:
-        payload = simplify(
-            pd_code_text or "",
-            max_paths=args.max_paths,
-            ban_heuristic=args.ban_heuristic,
-            reduction_round=args.reduction_round,
-            max_thread=args.max_thread,
-            verbose=args.verbose,
-            known_crossingless_components=args.known_crossingless_components,
-            remove_crossings=remove_crossings,
-        )
+        try:
+            payload = simplify(
+                pd_code_text or "",
+                max_paths=args.max_paths,
+                ban_heuristic=args.ban_heuristic,
+                reduction_round=args.reduction_round,
+                max_thread=args.max_thread,
+                timeout=args.timeout,
+                verbose=args.verbose,
+                known_crossingless_components=args.known_crossingless_components,
+                remove_crossings=remove_crossings,
+            )
+            if isinstance(payload, dict) and payload.get("timed_out"):
+                exit_code = 2
+        except KeyboardInterrupt:
+            exit_code = 130
+            payload = {"error": "interrupted by Ctrl+C"}
+        except Exception as exc:
+            exit_code = 2
+            payload = {"error": str(exc)}
 
     print(json.dumps(payload, indent=2))
     return exit_code

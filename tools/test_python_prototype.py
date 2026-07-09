@@ -51,6 +51,38 @@ def main() -> int:
         "final Python formatter should repair local crossing orientation and sort rows",
     )
 
+    progress_log = []
+    simplify.reduce_pd_code(
+        trefoil,
+        max_paths=-1,
+        ban_heuristic=True,
+        reduction_round=1,
+        max_thread=-1,
+        verbose=True,
+        progress=progress_log.append,
+    )
+    require(
+        any("bruteforce_threads max_thread=-1" in message for message in progress_log),
+        "Python verbose auto-thread log should be emitted in brute-force mode",
+    )
+    require(
+        any("actual_threads=" in message for message in progress_log),
+        "Python verbose auto-thread log should include the actual worker count",
+    )
+    timed_result = simplify.reduce_pd_code(
+        trefoil,
+        timeout=1,
+        _timeout_deadline=0.0,
+    )
+    require(timed_result.timed_out, "expired Python timeout deadline should return timed-out result")
+    require(len(timed_result.code) == len(trefoil), "timed-out Python result should keep a PD code")
+    try:
+        simplify.reduce_pd_code(trefoil, timeout=0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("timeout=0 should be rejected")
+
     after = simplify.analyze_components_after_removing_crossings(trefoil, [0, 1, 2])
     require(after.components_with_crossings == 0, "removed trefoil should have no crossing-bearing components")
     require(after.crossingless_components == 1, "removed trefoil should preserve one crossingless component")

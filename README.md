@@ -23,7 +23,11 @@ Run one PD code:
 On Windows, use `.\build\bin\pd_simplify.exe` for the executable path.
 Add `--json` to get machine-readable output with `final_pd_code` and
 `final_crossings`. Add `--verbose` to print progress logs to stderr, including
-the local timestamp, current reduction round, and crossing count.
+the local timestamp, current reduction round, crossing count, and the
+`actual_threads` selected when `--max-thread -1` enters brute-force search.
+Add `--timeout K` to cap each PD-code job at `K` seconds; the default `-1`
+means no timeout. Timed-out jobs still return the best PD code found so far
+and set `timed_out` in the JSON/text result.
 
 Create a redistributable package with the CLI, shared library, headers, and
 documentation:
@@ -99,6 +103,7 @@ agreement in the same run that measures time and peak RSS.
 - [Heuristic path sampling](docs/heuristic-path-sampling.md)
 - [Packaging](docs/packaging.md)
 - [Benchmarking](docs/benchmarking.md)
+- [C++ zip-random time analysis](docs/cpp-time-analysis.md)
 - [Python and C++ comparison results](docs/python-cpp-comparison.md)
 
 ## Acknowledgements

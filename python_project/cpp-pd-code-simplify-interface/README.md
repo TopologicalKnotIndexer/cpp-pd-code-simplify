@@ -49,8 +49,14 @@ The default `max_paths=-1` uses deterministic heuristic green-path sampling in
 the C++ backend. Use `ban_heuristic=True` to request exhaustive green-path
 enumeration for a manageable input. Use `reduction_round=K` to cap applied
 mid-simplification rounds; the default `-1` runs until stable. Use
-`verbose=True` to forward timestamped C++ progress logs to stderr. Verbose log
-lines use local wall-clock time in `YYYY-MM-DD HH:MM:SS` format.
+`timeout=K` to cap a call at `K` seconds; the default `-1` has no timeout. Use
+`verbose=True` to forward timestamped C++ progress logs to stderr. If a call
+times out, the returned dictionary still contains the best PD code found so far
+and sets `timed_out` to `True`. Verbose log lines use local wall-clock time in
+`YYYY-MM-DD HH:MM:SS` format. When `max_thread=-1` reaches a brute-force search
+phase, verbose logs also include `actual_threads`, the worker count selected by
+the C++ backend for that phase. The backend call runs in a helper process, so
+`Ctrl+C` can terminate active C++ work and its worker threads cleanly.
 
 Batch use:
 
