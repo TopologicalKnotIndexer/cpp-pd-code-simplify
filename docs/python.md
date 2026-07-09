@@ -28,12 +28,13 @@ python mid_simplify_v5.py --pd-code "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]"
 
 Use `--json` for structured output containing `final_pd_code` and
 `final_crossings`. Use `--reduction-round K` to cap applied
-mid-simplification rounds; the default `-1` runs until stable, with a
-brute-force check when heuristic mode can no longer find a path. Use
-`--timeout K` to cap each PD-code job at `K` seconds; the default `-1` has no
-timeout. A timed-out job returns the best PD code found so far and sets
-`timed_out` in JSON/text output. Use `--verbose` to print timestamped progress
-logs to stderr. Verbose log lines use local wall-clock time in
+mid-simplification rounds; the default `-1` runs until stable. In heuristic
+mode, a heuristic miss is followed by a brute-force check before the current
+diagram is treated as stable. If brute force finds a witness, the next round
+returns to heuristic mode. Use `--timeout K` to cap each PD-code job at `K`
+seconds; the default `-1` has no timeout. A timed-out job returns the best PD
+code found so far and sets `timed_out` in JSON/text output. Use `--verbose`
+to print timestamped progress logs to stderr. Verbose log lines use local wall-clock time in
 `YYYY-MM-DD HH:MM:SS` format. When `--max-thread -1` reaches a brute-force
 search phase, verbose logs also include `actual_threads`, the worker count
 selected for that phase. `Ctrl+C` cancels active multiprocessing workers and

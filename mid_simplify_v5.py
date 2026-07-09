@@ -2094,7 +2094,6 @@ def reduce_pd_code(
 
             if (
                 not search.found
-                and reduction_round < 0
                 and max_paths == -1
                 and not ban_heuristic
             ):

@@ -105,6 +105,27 @@ void test_verbose_auto_thread_log() {
         "verbose auto-thread log should include the actual worker count");
 }
 
+void test_finite_round_uses_brute_fallback() {
+    const auto trefoil = pdcode_simplify::parse_pd_code(
+        "[(1,5,2,4),(3,1,4,6),(5,3,6,2)]");
+    std::string log;
+    pdcode_simplify::SimplifierOptions options;
+    options.max_paths = -1;
+    options.max_threads = 1;
+    options.verbose = true;
+    options.progress = [&](const std::string& message) {
+        log += message;
+        log += '\n';
+    };
+
+    const auto result = pdcode_simplify::reduce_pd_code(trefoil, 0, options, 1);
+    require(result.mid_simplification_rounds == 0,
+            "stable finite-round fixture should not apply a witness");
+    require(
+        log.find("brute_fallback_start") != std::string::npos,
+        "finite reduction rounds should still use brute fallback before stopping");
+}
+
 void test_timeout_deadline() {
     const auto trefoil = pdcode_simplify::parse_pd_code(
         "[(1,5,2,4),(3,1,4,6),(5,3,6,2)]");
@@ -317,6 +338,7 @@ int main() {
         test_common_knot_components();
         test_link_components();
         test_verbose_auto_thread_log();
+        test_finite_round_uses_brute_fallback();
         test_timeout_deadline();
         test_crossingless_component_count_after_removal();
         test_r1_random_inflate_then_pre_simplify();

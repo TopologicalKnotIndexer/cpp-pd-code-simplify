@@ -94,6 +94,23 @@ def main() -> int:
         any("actual_threads=" in message for message in progress_log),
         "Python verbose auto-thread log should include the actual worker count",
     )
+    finite_round_log = []
+    stable_finite = simplify.reduce_pd_code(
+        trefoil,
+        max_paths=-1,
+        reduction_round=1,
+        max_thread=1,
+        verbose=True,
+        progress=finite_round_log.append,
+    )
+    require(
+        stable_finite.mid_simplification_rounds == 0,
+        "stable finite-round Python fixture should not apply a witness",
+    )
+    require(
+        any("brute_fallback_start" in message for message in finite_round_log),
+        "Python finite reduction rounds should still use brute fallback before stopping",
+    )
     timed_result = simplify.reduce_pd_code(
         trefoil,
         timeout=1,

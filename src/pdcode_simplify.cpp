@@ -2598,8 +2598,7 @@ ReductionResult reduce_pd_code(
                 emit_progress(run_options, message.str());
             }
 
-            if (!search.found && reduction_round < 0 &&
-                run_options.max_paths == -1 && !run_options.ban_heuristic) {
+            if (!search.found && run_options.max_paths == -1 && !run_options.ban_heuristic) {
                 SimplifierOptions brute_options = run_options;
                 brute_options.max_paths = -1;
                 brute_options.ban_heuristic = true;

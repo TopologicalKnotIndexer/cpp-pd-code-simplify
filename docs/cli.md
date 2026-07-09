@@ -110,10 +110,12 @@ green-path enumeration instead. If `--max-paths` is any other integer, the
 legacy bounded path collector is used.
 
 `--reduction-round -1` is the default. It repeatedly applies valid
-mid-simplification witnesses. In heuristic mode, if the heuristic can no
-longer find an applicable path, the executable runs one brute-force
-enumeration pass before declaring the diagram stable. Use
-`--reduction-round K` to cap the number of applied mid-simplification rounds.
+mid-simplification witnesses. Use `--reduction-round K` to cap the number of
+applied mid-simplification rounds. In heuristic mode, whenever the heuristic
+cannot find an applicable path before the round cap is exhausted, the
+executable runs a brute-force enumeration pass. If brute force finds a
+witness, that witness is applied and the next round starts again in heuristic
+mode; if brute force also fails, the diagram is treated as stable.
 Verbose log lines are prefixed with local wall-clock time in
 `YYYY-MM-DD HH:MM:SS` format. When `--max-thread -1` reaches a brute-force
 search phase, verbose logs also include `actual_threads`, the worker count
