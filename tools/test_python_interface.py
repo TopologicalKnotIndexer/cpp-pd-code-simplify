@@ -21,6 +21,7 @@ ZERO_BASED_TREFOIL = "PD[X[0,4,1,3],X[2,0,3,5],X[4,2,5,1]]"
 ORIENTATION_REPAIR = (
     "PD[X[1,6,2,7],X[9,4,10,5],X[8,1,7,10],X[6,3,5,2],X[4,9,3,8]]"
 )
+SAME_FACE_GREEN_UNKNOT = "PD[X[1,5,2,4],X[2,5,3,6],X[6,3,1,4]]"
 
 
 def preferred_cxx() -> str | None:
@@ -103,6 +104,11 @@ def main() -> int:
     assert kink["reidemeister_i_moves"] == 1
     assert kink["final_components"]["crossingless_components"] == 1
     assert kink["final_pd_code"] == "PD[]"
+
+    same_face_green = interface.simplify(SAME_FACE_GREEN_UNKNOT)
+    assert same_face_green["final_pd_code"] == "PD[]"
+    assert same_face_green["mid_simplification_rounds"] == 1
+    assert same_face_green["final_components"]["crossingless_components"] == 1
 
     brute = interface.simplify(TREFOIL, ban_heuristic=True, max_thread=1)
     brute_parallel = interface.simplify(TREFOIL, ban_heuristic=True, max_thread=4)

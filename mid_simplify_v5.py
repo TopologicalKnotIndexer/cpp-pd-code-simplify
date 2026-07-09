@@ -1106,14 +1106,15 @@ def collect_simple_paths(
 ) -> List[List[int]]:
     check_timeout(timeout, _timeout_deadline)
     if (
-        source == target
-        or source < 0
+        source < 0
         or target < 0
         or source >= len(graph.faces)
         or target >= len(graph.faces)
         or cutoff <= 0
     ):
         return []
+    if source == target:
+        return [[source]]
 
     paths: List[List[int]] = []
     visited = [False for _ in graph.faces]
@@ -1205,14 +1206,15 @@ def collect_heuristic_paths(
     check_timeout(timeout, _timeout_deadline)
     face_count = len(graph.faces)
     if (
-        source == target
-        or source < 0
+        source < 0
         or target < 0
         or source >= face_count
         or target >= face_count
         or cutoff <= 0
     ):
         return []
+    if source == target:
+        return [[source]]
 
     infinity = 10**9
     distance = heuristic_distances_to_target(graph, target, cutoff, timeout, _timeout_deadline)

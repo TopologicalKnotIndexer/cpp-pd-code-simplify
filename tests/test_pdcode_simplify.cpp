@@ -264,10 +264,27 @@ void test_reference_sample() {
     require(!result.green_path.empty(), "witness should include a green path");
 
     const auto reduced = pdcode_simplify::reduce_pd_code(code);
-    require(reduced.code.size() == 3,
-            "full reference reduction should apply witnesses and end at three crossings");
+    require(reduced.code.empty(),
+            "full reference reduction should apply same-face green paths and end at no crossings");
+    require(reduced.crossingless_components == 1,
+            "full reference reduction should preserve the final crossingless component");
     require(reduced.mid_simplification_rounds > 0,
             "full reference reduction should use at least one mid-simplification round");
+}
+
+void test_same_face_green_path_unknot() {
+    const auto code = pdcode_simplify::parse_pd_code(
+        "PD[X[1,5,2,4],X[2,5,3,6],X[6,3,1,4]]");
+    pdcode_simplify::SimplifierOptions options;
+    options.max_threads = 1;
+
+    const auto witness = pdcode_simplify::find_simplification(code, options);
+    require(witness.found, "same-face green path should be accepted as a simplification witness");
+
+    const auto reduced = pdcode_simplify::reduce_pd_code(code, 0, options, -1);
+    require(reduced.code.empty(), "same-face green path unknot should reduce to empty PD code");
+    require(reduced.crossingless_components == 1,
+            "same-face green path unknot should preserve the crossingless component");
 }
 
 }  // namespace
@@ -284,6 +301,7 @@ int main() {
         test_crossingless_component_count_after_removal();
         test_r1_random_inflate_then_pre_simplify();
         test_reference_sample();
+        test_same_face_green_path_unknot();
         std::cout << "All tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

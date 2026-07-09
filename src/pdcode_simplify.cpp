@@ -1074,10 +1074,14 @@ std::vector<std::vector<int>> collect_simple_paths(
     const SimplifierOptions& options) {
     check_timeout(options);
     std::vector<std::vector<int>> paths;
-    if (source == target || source < 0 || target < 0 ||
+    if (source < 0 || target < 0 ||
         source >= static_cast<int>(graph.faces.size()) ||
         target >= static_cast<int>(graph.faces.size()) ||
         cutoff <= 0) {
+        return paths;
+    }
+    if (source == target) {
+        paths.push_back(std::vector<int>{source});
         return paths;
     }
 
@@ -1196,8 +1200,12 @@ std::vector<std::vector<int>> collect_heuristic_paths(
     check_timeout(options);
     std::vector<std::vector<int>> paths;
     const int face_count = static_cast<int>(graph.faces.size());
-    if (source == target || source < 0 || target < 0 ||
+    if (source < 0 || target < 0 ||
         source >= face_count || target >= face_count || cutoff <= 0) {
+        return paths;
+    }
+    if (source == target) {
+        paths.push_back(std::vector<int>{source});
         return paths;
     }
 

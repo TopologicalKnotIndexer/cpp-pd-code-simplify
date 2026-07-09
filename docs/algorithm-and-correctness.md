@@ -89,6 +89,11 @@ green path from simply crossing the red boundary through its interior. The
 remaining dual graph is searched for simple paths with total weight less
 than the red path length.
 
+If the source and target endpoint regions are the same face, the green path
+is represented by the single-face path `[face]`. This is a valid zero-crossing
+dual path: the green arc stays inside one complementary region, including the
+unbounded exterior region when that is the shared face.
+
 When `max_paths` is not `-1`, the implementation uses the bounded depth-first
 collector. When `max_paths` is `-1`, the default collector is the shared
 C++/Python deterministic heuristic described in

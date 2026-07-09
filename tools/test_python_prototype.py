@@ -51,6 +51,21 @@ def main() -> int:
         "final Python formatter should repair local crossing orientation and sort rows",
     )
 
+    same_face_green = simplify.parse_pd_code(
+        "PD[X[1,5,2,4],X[2,5,3,6],X[6,3,1,4]]"
+    )
+    same_face_witness = simplify.find_simplification(same_face_green)
+    require(same_face_witness.found, "Python should find same-face green path witness")
+    same_face_result = simplify.reduce_pd_code(same_face_green)
+    require(
+        same_face_result.to_json()["final_pd_code"] == "PD[]",
+        "Python same-face green path unknot should reduce to PD[]",
+    )
+    require(
+        same_face_result.crossingless_components == 1,
+        "Python same-face green path unknot should preserve one crossingless component",
+    )
+
     progress_log = []
     simplify.reduce_pd_code(
         trefoil,
