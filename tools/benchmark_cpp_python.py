@@ -312,7 +312,8 @@ def run_benchmark(
                     f"batch[{len(cases):2d}] {engine:9s} repeat={repeat_index:2d} "
                     f"time={elapsed:8.3f}s per_case={elapsed / len(cases):8.4f}s "
                     f"peak_rss={peak_mib:8.2f} MiB "
-                    f"return={return_code}"
+                    f"return={return_code}",
+                    flush=True,
                 )
             mismatches = []
             cpp_results = repeat_results["cpp"]
@@ -328,7 +329,7 @@ def run_benchmark(
                 raise RuntimeError(
                     f"correctness mismatch in repeat {repeat_index}: {details}"
                 )
-            print(f"correctness repeat={repeat_index}: ok")
+            print(f"correctness repeat={repeat_index}: ok", flush=True)
     finally:
         pd_file.unlink(missing_ok=True)
     return rows

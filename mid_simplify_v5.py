@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import copy
 import heapq
 import json
 import multiprocessing
@@ -36,6 +37,21 @@ R3_FAILOVER_MAX_DEPTH = 8
 R3_FAILOVER_MAX_STATES = 4096
 R3_PREPASS_MAX_DEPTH = 4
 R3_PREPASS_MAX_STATES = 256
+NON_MONOTONE_MAX_RED_LENGTH = 80
+NON_MONOTONE_MAX_DEPTH = 72
+NON_MONOTONE_BEAM_WIDTH = 32
+NON_MONOTONE_MAX_CANDIDATES_PER_STATE = 96
+NON_MONOTONE_MAX_CANDIDATES_PER_LENGTH = 4
+NON_MONOTONE_MAX_RED_SCANS_PER_LENGTH = 48
+NON_MONOTONE_MAX_RED_TESTS_PER_NODE = 64
+NON_MONOTONE_EXTRA_CROSSINGS = 2
+NON_MONOTONE_MAX_TOTAL_INCREASE = 14
+NON_MONOTONE_R3_MOVES_PER_STATE = 16
+NON_MONOTONE_HEURISTIC_STATE_BUDGET = 384
+NON_MONOTONE_HEURISTIC_PATH_BUDGET = 8
+NON_MONOTONE_MAX_GREEN_TESTS_PER_STATE = 4096
+NON_MONOTONE_MAX_TOTAL_GREEN_TESTS = 4_000_000
+UINT64_MASK = (1 << 64) - 1
 
 
 class TeeTextIO:
@@ -114,6 +130,8 @@ class PdCodeSimplifyTimeoutError(RuntimeError):
 
 
 DEFAULT_BRUTEFORCE_BUDGET = 200_000
+_SIMPLIFICATION_SEARCH_CACHE: Dict[Tuple[str, int, bool, bool, int, int], SimplificationResult] = {}
+_NON_MONOTONE_CACHE: Dict[Tuple[str, int], NonMonotoneSearchResult] = {}
 
 
 def validate_timeout(timeout: int) -> None:
@@ -356,6 +374,46 @@ class PDSimplificationResult:
 
 
 @dataclass
+class NonMonotoneStep:
+    code: PDCode = field(default_factory=list)
+    crossingless_components: int = 0
+    kind: str = ""
+    red_length: int = 0
+    green_length: int = 0
+    reidemeister_i_moves: int = 0
+    reidemeister_ii_moves: int = 0
+    reidemeister_iii_moves: int = 0
+    nugatory_crossing_moves: int = 0
+
+
+@dataclass
+class NonMonotoneNode:
+    code: PDCode = field(default_factory=list)
+    crossingless_components: int = 0
+    steps: List[NonMonotoneStep] = field(default_factory=list)
+    depth: int = 0
+    r3_potential: int = 0
+    serial: int = 0
+
+
+@dataclass
+class NonMonotoneSearchResult:
+    found: bool = False
+    code: PDCode = field(default_factory=list)
+    crossingless_components: int = 0
+    steps: List[NonMonotoneStep] = field(default_factory=list)
+    tested_red_paths: int = 0
+    tested_green_paths: int = 0
+    applied_candidates: int = 0
+    generated_states: int = 0
+    depth: int = 0
+    reidemeister_i_moves: int = 0
+    reidemeister_ii_moves: int = 0
+    reidemeister_iii_moves: int = 0
+    nugatory_crossing_moves: int = 0
+
+
+@dataclass
 class PDJob:
     label: str
     code: PDCode = field(default_factory=list)
@@ -394,6 +452,14 @@ def format_pd_code(code: PDCode) -> str:
 
 def compact_text(text: str) -> str:
     return "".join(ch for ch in text if not ch.isspace())
+
+
+def stable_hash_text(text: str) -> int:
+    value = 1469598103934665603
+    for byte in text.encode("utf-8"):
+        value ^= byte
+        value = (value * 1099511628211) & UINT64_MASK
+    return value
 
 
 def denotes_crossingless_unknot(text: str) -> bool:
@@ -1793,6 +1859,137 @@ def collect_heuristic_paths(
     return paths
 
 
+def collect_limited_heuristic_paths(
+    graph: DualGraph,
+    source: int,
+    target: int,
+    cutoff: int,
+    state_budget: int,
+    path_budget: int,
+    timeout: int = -1,
+    _timeout_deadline: Optional[float] = None,
+) -> List[List[int]]:
+    check_timeout(timeout, _timeout_deadline)
+    face_count = len(graph.faces)
+    if (
+        source < 0
+        or target < 0
+        or source >= face_count
+        or target >= face_count
+        or cutoff <= 0
+        or state_budget <= 0
+        or path_budget <= 0
+    ):
+        return []
+    if source == target:
+        return [[source]]
+
+    infinity = 10**9
+    distance = heuristic_distances_to_target(graph, target, cutoff, timeout, _timeout_deadline)
+    if distance[source] == infinity or distance[source] >= cutoff:
+        return []
+
+    paths: List[List[int]] = []
+    serial = 0
+    heap: List[Tuple[int, int, int, int, int, int, List[int], Tuple[bool, ...], int, int]] = []
+    initial_visited = [False for _ in graph.faces]
+    initial_visited[source] = True
+    heapq.heappush(
+        heap,
+        (
+            distance[source],
+            distance[source],
+            0,
+            0,
+            1,
+            serial,
+            [source],
+            tuple(initial_visited),
+            0,
+            0,
+        ),
+    )
+    serial += 1
+
+    popped_by_depth_face: Dict[Tuple[int, int], int] = {}
+    popped_states = 0
+    beam_limit = max(2, HEURISTIC_BEAM_WIDTH // 2)
+    while heap and popped_states < state_budget and len(paths) < path_budget:
+        check_timeout(timeout, _timeout_deadline)
+        (
+            _estimated_weight,
+            _estimated_length,
+            _branch_key,
+            _weight_key,
+            _path_length_key,
+            _serial_key,
+            path,
+            visited_tuple,
+            weight,
+            branch_penalty,
+        ) = heapq.heappop(heap)
+        popped_states += 1
+
+        current = path[-1]
+        depth = len(path) - 1
+        if current == target:
+            if weight < cutoff:
+                paths.append(path)
+            continue
+        if depth >= cutoff - 1:
+            continue
+
+        beam_key = (depth, current)
+        beam_count = popped_by_depth_face.get(beam_key, 0)
+        if beam_count >= beam_limit:
+            continue
+        popped_by_depth_face[beam_key] = beam_count + 1
+
+        visited = list(visited_tuple)
+        steps = []
+        for edge_index in graph.adjacency[current]:
+            edge = graph.edges[edge_index]
+            nxt = edge.v if edge.u == current else edge.u
+            if visited[nxt] or distance[nxt] == infinity:
+                continue
+            new_weight = weight + edge.weight
+            if new_weight >= cutoff:
+                continue
+            new_depth = depth + 1
+            if new_depth + distance[nxt] >= cutoff:
+                continue
+            degree_penalty = max(0, len(graph.adjacency[nxt]) - 2)
+            steps.append((edge.weight, distance[nxt], degree_penalty, nxt, edge_index))
+        steps.sort()
+
+        for edge_weight, _distance, degree_penalty, nxt, _edge_index in steps:
+            next_path = path + [nxt]
+            next_visited = list(visited)
+            next_visited[nxt] = True
+            next_weight = weight + edge_weight
+            next_branch_penalty = branch_penalty + degree_penalty
+            estimated_weight = next_weight + distance[nxt]
+            estimated_length = len(next_path) - 1 + distance[nxt]
+            heapq.heappush(
+                heap,
+                (
+                    estimated_weight,
+                    estimated_length,
+                    next_branch_penalty,
+                    next_weight,
+                    len(next_path),
+                    serial,
+                    next_path,
+                    tuple(next_visited),
+                    next_weight,
+                    next_branch_penalty,
+                ),
+            )
+            serial += 1
+
+    return paths
+
+
 def opposite_level(level: str) -> str:
     return "over" if level == "under" else "under"
 
@@ -2327,6 +2524,26 @@ def find_simplification(
         result.path_search_mode = "bruteforce"
     else:
         result.path_search_mode = "bounded"
+
+    cache_key: Optional[Tuple[str, int, bool, bool, int, int]] = None
+    if not verbose and deadline is None:
+        cache_key = (
+            format_final_pd_code(code),
+            max_paths,
+            ban_heuristic,
+            require_applicable,
+            max_thread,
+            bruteforce_budget,
+        )
+        cached = _SIMPLIFICATION_SEARCH_CACHE.get(cache_key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+
+    def store_and_return(value: SimplificationResult) -> SimplificationResult:
+        if cache_key is not None:
+            _SIMPLIFICATION_SEARCH_CACHE[cache_key] = copy.deepcopy(value)
+        return value
+
     diagram = Diagram(code)
     check_timeout(timeout, deadline)
     base_graph = DualGraph(diagram)
@@ -2356,17 +2573,19 @@ def find_simplification(
                 ),
             )
         if worker_count > 1:
-            return find_simplification_parallel_red_paths(
-                code,
-                red_lines,
-                require_applicable,
-                worker_count,
-                max_paths,
-                ban_heuristic,
-                result.path_search_mode,
-                bruteforce_budget,
-                timeout,
-                deadline,
+            return store_and_return(
+                find_simplification_parallel_red_paths(
+                    code,
+                    red_lines,
+                    require_applicable,
+                    worker_count,
+                    max_paths,
+                    ban_heuristic,
+                    result.path_search_mode,
+                    bruteforce_budget,
+                    timeout,
+                    deadline,
+                )
             )
 
     brute_budget = (
@@ -2404,16 +2623,16 @@ def find_simplification(
         result.tested_green_paths += outcome.tested_green_paths
         result.resource_limited = result.resource_limited or outcome.resource_limited
         if outcome.resource_limited:
-            return result
+            return store_and_return(result)
         if outcome.found:
             witness = outcome.witness
             witness.path_search_mode = result.path_search_mode
             witness.tested_red_paths = result.tested_red_paths
             witness.tested_green_paths = result.tested_green_paths
             witness.resource_limited = outcome.resource_limited
-            return witness
+            return store_and_return(witness)
 
-    return result
+    return store_and_return(result)
 
 
 class DisjointSet:
@@ -2595,6 +2814,536 @@ def apply_simplification_witness(
     crossing_components = analyze_components(output).components_with_crossings if output else 0
     crossingless_components = max(0, total_components - crossing_components)
     return output, crossingless_components
+
+
+def safe_r3_potential(
+    code: PDCode,
+    timeout: int = -1,
+    deadline: Optional[float] = None,
+) -> int:
+    check_timeout(timeout, deadline)
+    if len(code) < 3:
+        return 0
+    return len(possible_reidemeister_iii_moves(code))
+
+
+def _non_monotone_node_sort_key(
+    node: NonMonotoneNode,
+    target_crossings: int,
+) -> Tuple[int, int, int, int, int]:
+    delta = len(node.code) - target_crossings
+    return (delta, -node.r3_potential, node.depth, len(node.steps), node.serial)
+
+
+def _accumulate_non_monotone_counts(
+    result: NonMonotoneSearchResult,
+    step: NonMonotoneStep,
+) -> None:
+    result.reidemeister_i_moves += step.reidemeister_i_moves
+    result.reidemeister_ii_moves += step.reidemeister_ii_moves
+    result.reidemeister_iii_moves += step.reidemeister_iii_moves
+    result.nugatory_crossing_moves += step.nugatory_crossing_moves
+
+
+def _add_non_monotone_candidate(
+    parent: NonMonotoneNode,
+    raw_code: PDCode,
+    raw_crossingless_components: int,
+    raw_step: NonMonotoneStep,
+    accepted_states: Set[str],
+    candidate_states: Set[str],
+    max_allowed_crossings: int,
+    target_crossings: int,
+    serial_box: List[int],
+    candidates: List[NonMonotoneNode],
+    result: NonMonotoneSearchResult,
+    timeout: int,
+    deadline: Optional[float],
+) -> bool:
+    check_timeout(timeout, deadline)
+    key = format_final_pd_code(raw_code)
+    if key in accepted_states or key in candidate_states:
+        return False
+    candidate_states.add(key)
+    code = parse_pd_code(key)
+    if len(code) > max_allowed_crossings:
+        return False
+
+    step = NonMonotoneStep(
+        code=code,
+        crossingless_components=raw_crossingless_components,
+        kind=raw_step.kind,
+        red_length=raw_step.red_length,
+        green_length=raw_step.green_length,
+        reidemeister_i_moves=raw_step.reidemeister_i_moves,
+        reidemeister_ii_moves=raw_step.reidemeister_ii_moves,
+        reidemeister_iii_moves=raw_step.reidemeister_iii_moves,
+        nugatory_crossing_moves=raw_step.nugatory_crossing_moves,
+    )
+    node = NonMonotoneNode(
+        code=code,
+        crossingless_components=raw_crossingless_components,
+        steps=list(parent.steps) + [step],
+        depth=parent.depth + 1,
+        r3_potential=safe_r3_potential(code, timeout, deadline),
+        serial=serial_box[0],
+    )
+    serial_box[0] += 1
+
+    result.generated_states += 1
+    if len(node.code) < target_crossings:
+        result.found = True
+        result.code = node.code
+        result.crossingless_components = node.crossingless_components
+        result.steps = node.steps
+        result.depth = node.depth
+        for stored_step in result.steps:
+            _accumulate_non_monotone_counts(result, stored_step)
+        return True
+
+    candidates.append(node)
+    return True
+
+
+def _generate_non_monotone_r3_candidates(
+    node: NonMonotoneNode,
+    accepted_states: Set[str],
+    candidate_states: Set[str],
+    max_allowed_crossings: int,
+    target_crossings: int,
+    serial_box: List[int],
+    candidates: List[NonMonotoneNode],
+    result: NonMonotoneSearchResult,
+    timeout: int,
+    deadline: Optional[float],
+    verbose: bool,
+    progress: Optional[Callable[[str], None]],
+) -> None:
+    check_timeout(timeout, deadline)
+    if len(candidates) >= NON_MONOTONE_MAX_CANDIDATES_PER_STATE:
+        return
+    _emit_progress(
+        verbose,
+        progress,
+        (
+            f"non_monotone_r3_start node_depth={node.depth} "
+            f"crossings={len(node.code)} candidates={len(candidates)}"
+        ),
+    )
+    tried = 0
+    for move in possible_reidemeister_iii_moves(node.code):
+        check_timeout(timeout, deadline)
+        if (
+            tried >= NON_MONOTONE_R3_MOVES_PER_STATE
+            or len(candidates) >= NON_MONOTONE_MAX_CANDIDATES_PER_STATE
+        ):
+            break
+        tried += 1
+        moved = apply_reidemeister_iii_move(node.code, move)
+        simplified = simplify_pd_code(
+            moved,
+            node.crossingless_components,
+            timeout,
+            deadline,
+        )
+        step = NonMonotoneStep(
+            kind="r3",
+            reidemeister_i_moves=simplified.reidemeister_i_moves,
+            reidemeister_ii_moves=simplified.reidemeister_ii_moves,
+            reidemeister_iii_moves=1,
+            nugatory_crossing_moves=simplified.nugatory_crossing_moves,
+        )
+        _add_non_monotone_candidate(
+            node,
+            simplified.code,
+            simplified.crossingless_components,
+            step,
+            accepted_states,
+            candidate_states,
+            max_allowed_crossings,
+            target_crossings,
+            serial_box,
+            candidates,
+            result,
+            timeout,
+            deadline,
+        )
+        if result.found:
+            return
+    _emit_progress(
+        verbose,
+        progress,
+        (
+            f"non_monotone_r3_done node_depth={node.depth} tried={tried} "
+            f"candidates={len(candidates)} generated_states={result.generated_states}"
+        ),
+    )
+
+
+def _generate_non_monotone_surgery_candidates(
+    node: NonMonotoneNode,
+    accepted_states: Set[str],
+    candidate_states: Set[str],
+    max_allowed_crossings: int,
+    target_crossings: int,
+    serial_box: List[int],
+    total_green_tests_box: List[int],
+    candidates: List[NonMonotoneNode],
+    result: NonMonotoneSearchResult,
+    timeout: int,
+    deadline: Optional[float],
+    verbose: bool,
+    progress: Optional[Callable[[str], None]],
+) -> None:
+    check_timeout(timeout, deadline)
+    state_key = format_final_pd_code(node.code)
+    state_hash = stable_hash_text(state_key)
+    diagram = Diagram(node.code)
+    base_graph = DualGraph(diagram)
+    red_lines = possible_red_lines(diagram)
+
+    red_by_length: Dict[int, List[int]] = {}
+    for index, red_line in enumerate(red_lines):
+        length = len(red_line)
+        if length > NON_MONOTONE_MAX_RED_LENGTH:
+            break
+        red_by_length.setdefault(length, []).append(index)
+
+    state_green_tests = 0
+    state_red_tests = 0
+    length_order = list(red_by_length)
+
+    for red_length in length_order:
+        indices = red_by_length[red_length]
+        if not indices:
+            continue
+        accepted_for_length = 0
+        length_done = False
+        start_slot = (
+            (
+                state_hash
+                + ((red_length * 11400714819323198485) & UINT64_MASK)
+            )
+            & UINT64_MASK
+        ) % len(indices)
+        scan_limit = min(len(indices), NON_MONOTONE_MAX_RED_SCANS_PER_LENGTH)
+
+        for slot_offset in range(scan_limit):
+            check_timeout(timeout, deadline)
+            if (
+                result.found
+                or len(candidates) >= NON_MONOTONE_MAX_CANDIDATES_PER_STATE
+                or state_red_tests >= NON_MONOTONE_MAX_RED_TESTS_PER_NODE
+                or state_green_tests >= NON_MONOTONE_MAX_GREEN_TESTS_PER_STATE
+                or total_green_tests_box[0] >= NON_MONOTONE_MAX_TOTAL_GREEN_TESTS
+            ):
+                return
+            if accepted_for_length >= NON_MONOTONE_MAX_CANDIDATES_PER_LENGTH:
+                break
+
+            red_index = indices[(start_slot + slot_offset) % len(indices)]
+            red_path = red_lines[red_index]
+            state_red_tests += 1
+            result.tested_red_paths += 1
+            if verbose and (
+                result.tested_red_paths <= 8
+                or result.tested_red_paths % 64 == 0
+            ):
+                _emit_progress(
+                    verbose,
+                    progress,
+                    (
+                        f"non_monotone_progress node_depth={node.depth} "
+                        f"red_length={red_length} "
+                        f"tested_red={result.tested_red_paths} "
+                        f"tested_green={result.tested_green_paths} "
+                        f"applied_candidates={result.applied_candidates} "
+                        f"candidates={len(candidates)} "
+                        f"state_green_tests={state_green_tests} "
+                        f"total_green_tests={total_green_tests_box[0]}"
+                    ),
+                )
+
+            graph = clone_dual_graph(base_graph)
+            start = red_path[0]
+            end = red_path[-1]
+            sources = [
+                graph.edge_to_face[start.key],
+                graph.edge_to_face[diagram.opposite(start).key],
+            ]
+            destinations = [
+                graph.edge_to_face[end.key],
+                graph.edge_to_face[diagram.opposite(end).key],
+            ]
+
+            for endpoint in red_path[1:-1]:
+                right_region = graph.edge_to_face[endpoint.key]
+                left_region = graph.edge_to_face[diagram.opposite(endpoint).key]
+                edge = graph.edge(right_region, left_region)
+                if edge is not None:
+                    edge.weight = BLOCKED_WEIGHT
+
+            cutoff = red_length + NON_MONOTONE_EXTRA_CROSSINGS
+            for source in sources:
+                for destination in destinations:
+                    check_timeout(timeout, deadline)
+                    green_paths = collect_limited_heuristic_paths(
+                        graph,
+                        source,
+                        destination,
+                        cutoff,
+                        NON_MONOTONE_HEURISTIC_STATE_BUDGET,
+                        NON_MONOTONE_HEURISTIC_PATH_BUDGET,
+                        timeout,
+                        deadline,
+                    )
+                    for green_path in green_paths:
+                        check_timeout(timeout, deadline)
+                        if (
+                            result.found
+                            or len(candidates) >= NON_MONOTONE_MAX_CANDIDATES_PER_STATE
+                            or state_green_tests >= NON_MONOTONE_MAX_GREEN_TESTS_PER_STATE
+                            or total_green_tests_box[0] >= NON_MONOTONE_MAX_TOTAL_GREEN_TESTS
+                        ):
+                            return
+                        if accepted_for_length >= NON_MONOTONE_MAX_CANDIDATES_PER_LENGTH:
+                            length_done = True
+                            break
+                        if len(green_path) > red_length + NON_MONOTONE_EXTRA_CROSSINGS:
+                            continue
+                        state_green_tests += 1
+                        total_green_tests_box[0] += 1
+                        result.tested_green_paths += 1
+
+                        for direction in ("left", "right"):
+                            witness = SimplificationResult(path_search_mode="non_monotone")
+                            if not do_check(
+                                diagram,
+                                graph,
+                                red_path,
+                                green_path,
+                                direction,
+                                witness,
+                                timeout,
+                                deadline,
+                            ):
+                                continue
+                            try:
+                                applied_code, applied_crossingless = apply_simplification_witness(
+                                    node.code,
+                                    witness,
+                                    node.crossingless_components,
+                                )
+                                simplified = simplify_pd_code(
+                                    applied_code,
+                                    applied_crossingless,
+                                    timeout,
+                                    deadline,
+                                )
+                                result.applied_candidates += 1
+                                step = NonMonotoneStep(
+                                    kind="surgery",
+                                    red_length=red_length,
+                                    green_length=len(green_path),
+                                    reidemeister_i_moves=simplified.reidemeister_i_moves,
+                                    reidemeister_ii_moves=simplified.reidemeister_ii_moves,
+                                    nugatory_crossing_moves=simplified.nugatory_crossing_moves,
+                                )
+                                accepted = _add_non_monotone_candidate(
+                                    node,
+                                    simplified.code,
+                                    simplified.crossingless_components,
+                                    step,
+                                    accepted_states,
+                                    candidate_states,
+                                    max_allowed_crossings,
+                                    target_crossings,
+                                    serial_box,
+                                    candidates,
+                                    result,
+                                    timeout,
+                                    deadline,
+                                )
+                                if result.found:
+                                    return
+                                if accepted:
+                                    accepted_for_length += 1
+                                    if (
+                                        accepted_for_length
+                                        >= NON_MONOTONE_MAX_CANDIDATES_PER_LENGTH
+                                    ):
+                                        length_done = True
+                                        break
+                            except Exception:
+                                continue
+                        if length_done:
+                            break
+                    if length_done:
+                        break
+                if length_done:
+                    break
+            if length_done:
+                break
+
+
+def _select_non_monotone_beam(
+    candidates: List[NonMonotoneNode],
+    target_crossings: int,
+) -> List[NonMonotoneNode]:
+    selected: List[NonMonotoneNode] = []
+    selected_serials: Set[int] = set()
+
+    def take_candidate(
+        candidate: NonMonotoneNode,
+        selected_by_delta: Dict[int, int],
+    ) -> None:
+        if candidate.serial in selected_serials:
+            return
+        delta = len(candidate.code) - target_crossings
+        same_crossing_cap = max(3, NON_MONOTONE_BEAM_WIDTH // 3)
+        other_crossing_cap = max(2, NON_MONOTONE_BEAM_WIDTH // 5)
+        cap = same_crossing_cap if delta == 0 else other_crossing_cap
+        if (
+            selected_by_delta.get(delta, 0) >= cap
+            and len(selected) + 1 < NON_MONOTONE_BEAM_WIDTH
+        ):
+            return
+        selected_by_delta[delta] = selected_by_delta.get(delta, 0) + 1
+        selected_serials.add(candidate.serial)
+        selected.append(candidate)
+
+    candidates.sort(key=lambda node: _non_monotone_node_sort_key(node, target_crossings))
+    crossing_first_by_delta: Dict[int, int] = {}
+    for candidate in candidates:
+        take_candidate(candidate, crossing_first_by_delta)
+        if len(selected) >= NON_MONOTONE_BEAM_WIDTH // 2:
+            break
+
+    candidates.sort(
+        key=lambda node: (
+            -node.r3_potential,
+            *_non_monotone_node_sort_key(node, target_crossings),
+        )
+    )
+    r3_first_by_delta: Dict[int, int] = {}
+    for candidate in candidates:
+        take_candidate(candidate, r3_first_by_delta)
+        if len(selected) >= NON_MONOTONE_BEAM_WIDTH:
+            break
+    return selected
+
+
+def find_non_monotone_reduction(
+    code: PDCode,
+    crossingless_components: int,
+    timeout: int = -1,
+    deadline: Optional[float] = None,
+    verbose: bool = False,
+    progress: Optional[Callable[[str], None]] = None,
+) -> NonMonotoneSearchResult:
+    check_timeout(timeout, deadline)
+    result = NonMonotoneSearchResult(
+        code=[tuple(crossing) for crossing in code],
+        crossingless_components=crossingless_components,
+    )
+    cache_key: Optional[Tuple[str, int]] = None
+    if not verbose and deadline is None:
+        cache_key = (format_final_pd_code(code), crossingless_components)
+        cached = _NON_MONOTONE_CACHE.get(cache_key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+
+    def store_and_return(value: NonMonotoneSearchResult) -> NonMonotoneSearchResult:
+        if cache_key is not None:
+            _NON_MONOTONE_CACHE[cache_key] = copy.deepcopy(value)
+        return value
+
+    target_crossings = len(code)
+    max_allowed_crossings = target_crossings + NON_MONOTONE_MAX_TOTAL_INCREASE
+
+    accepted_states: Set[str] = {format_final_pd_code(code)}
+    serial_box = [0]
+    initial = NonMonotoneNode(
+        code=[tuple(crossing) for crossing in code],
+        crossingless_components=crossingless_components,
+        depth=0,
+        r3_potential=safe_r3_potential(code, timeout, deadline),
+        serial=serial_box[0],
+    )
+    serial_box[0] += 1
+    beam = [initial]
+    total_green_tests_box = [0]
+
+    for depth in range(NON_MONOTONE_MAX_DEPTH):
+        if not beam:
+            break
+        check_timeout(timeout, deadline)
+        candidates: List[NonMonotoneNode] = []
+        candidate_states: Set[str] = set()
+        for node in beam:
+            check_timeout(timeout, deadline)
+            _generate_non_monotone_r3_candidates(
+                node,
+                accepted_states,
+                candidate_states,
+                max_allowed_crossings,
+                target_crossings,
+                serial_box,
+                candidates,
+                result,
+                timeout,
+                deadline,
+                verbose,
+                progress,
+            )
+            if result.found:
+                return store_and_return(result)
+            if len(candidates) >= NON_MONOTONE_MAX_CANDIDATES_PER_STATE:
+                break
+            _generate_non_monotone_surgery_candidates(
+                node,
+                accepted_states,
+                candidate_states,
+                max_allowed_crossings,
+                target_crossings,
+                serial_box,
+                total_green_tests_box,
+                candidates,
+                result,
+                timeout,
+                deadline,
+                verbose,
+                progress,
+            )
+            if result.found:
+                return store_and_return(result)
+            if len(candidates) >= NON_MONOTONE_MAX_CANDIDATES_PER_STATE:
+                break
+            if total_green_tests_box[0] >= NON_MONOTONE_MAX_TOTAL_GREEN_TESTS:
+                break
+
+        beam = _select_non_monotone_beam(candidates, target_crossings)
+        for node in beam:
+            accepted_states.add(format_final_pd_code(node.code))
+        if verbose:
+            message = (
+                f"non_monotone_depth depth={depth + 1} beam={len(beam)} "
+                f"generated_states={result.generated_states} "
+                f"tested_red={result.tested_red_paths} "
+                f"tested_green={result.tested_green_paths} "
+                f"applied_candidates={result.applied_candidates} "
+                f"total_green_budget={total_green_tests_box[0]}"
+            )
+            if beam:
+                message += (
+                    f" best_crossings={len(beam[0].code)} "
+                    f"best_r3_potential={beam[0].r3_potential}"
+                )
+            _emit_progress(verbose, progress, message)
+        if total_green_tests_box[0] >= NON_MONOTONE_MAX_TOTAL_GREEN_TESTS:
+            break
+
+    return store_and_return(result)
 
 
 def _emit_progress(
@@ -2780,6 +3529,87 @@ def reduce_pd_code(
                 and max_paths == -1
                 and not ban_heuristic
             ):
+                _emit_progress(
+                    verbose,
+                    progress,
+                    (
+                        f"round {round_index} non_monotone_start "
+                        f"crossings={len(output.code)} "
+                        f"max_depth={NON_MONOTONE_MAX_DEPTH} "
+                        f"beam_width={NON_MONOTONE_BEAM_WIDTH} "
+                        f"max_red_length={NON_MONOTONE_MAX_RED_LENGTH} "
+                        f"max_total_green_tests={NON_MONOTONE_MAX_TOTAL_GREEN_TESTS}"
+                    ),
+                )
+                non_monotone = find_non_monotone_reduction(
+                    output.code,
+                    output.crossingless_components,
+                    timeout=timeout,
+                    deadline=deadline,
+                    verbose=verbose,
+                    progress=progress,
+                )
+                output.tested_red_paths += non_monotone.tested_red_paths
+                output.tested_green_paths += non_monotone.tested_green_paths
+                _emit_progress(
+                    verbose,
+                    progress,
+                    (
+                        f"round {round_index} non_monotone_done "
+                        f"found={'yes' if non_monotone.found else 'no'} "
+                        f"depth={non_monotone.depth} "
+                        f"steps={len(non_monotone.steps)} "
+                        f"tested_red={non_monotone.tested_red_paths} "
+                        f"tested_green={non_monotone.tested_green_paths} "
+                        f"applied_candidates={non_monotone.applied_candidates} "
+                        f"generated_states={non_monotone.generated_states} "
+                        f"final_crossings={len(non_monotone.code) if non_monotone.found else len(output.code)} "
+                        f"r1_moves={non_monotone.reidemeister_i_moves} "
+                        f"r2_moves={non_monotone.reidemeister_ii_moves} "
+                        f"r3_moves={non_monotone.reidemeister_iii_moves} "
+                        f"nugatory_moves={non_monotone.nugatory_crossing_moves}"
+                    ),
+                )
+                if non_monotone.found:
+                    for step in non_monotone.steps:
+                        if (
+                            reduction_round >= 0
+                            and output.mid_simplification_rounds >= reduction_round
+                        ):
+                            break
+                        step_round = output.mid_simplification_rounds + 1
+                        before_step_crossings = len(output.code)
+                        output.mid_simplification_rounds += 1
+                        output.code = _canonical_output_code(step.code)
+                        output.crossingless_components = step.crossingless_components
+                        output.reidemeister_i_moves += step.reidemeister_i_moves
+                        output.reidemeister_ii_moves += step.reidemeister_ii_moves
+                        output.reidemeister_iii_moves += step.reidemeister_iii_moves
+                        output.nugatory_crossing_moves += step.nugatory_crossing_moves
+                        _emit_step_pd(
+                            show_step_pd,
+                            step_pd_output,
+                            step_round,
+                            output.code,
+                        )
+                        _emit_progress(
+                            verbose,
+                            progress,
+                            (
+                                f"round {step_round} non_monotone_applied "
+                                f"kind={step.kind} "
+                                f"crossings={before_step_crossings} -> {len(output.code)} "
+                                f"red_length={step.red_length} "
+                                f"green_length={step.green_length} "
+                                f"crossingless_components={output.crossingless_components} "
+                                f"r1_moves={step.reidemeister_i_moves} "
+                                f"r2_moves={step.reidemeister_ii_moves} "
+                                f"r3_moves={step.reidemeister_iii_moves} "
+                                f"nugatory_moves={step.nugatory_crossing_moves}"
+                            ),
+                        )
+                    continue
+
                 output.last_path_search_mode = _search_mode(-1, True)
                 _emit_progress(
                     verbose,

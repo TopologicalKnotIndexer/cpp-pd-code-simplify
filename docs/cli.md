@@ -126,10 +126,14 @@ applied mid-simplification rounds. Every generated PD code is canonicalized
 immediately after it is produced, including after each local cleanup deletion
 and after every applied witness. In heuristic mode, whenever the heuristic
 cannot find an applicable path before the round cap is exhausted, the
+executable first tries the deterministic non-monotone failover. This failover
+allows bounded RIII and validated surgery detours, but accepts only a cleaned
+PD code with fewer crossings. If that does not reduce the diagram, the
 executable runs a brute-force enumeration pass. If brute force finds a
 witness, that witness is applied and the next round starts again in heuristic
-mode. A diagram is treated as stable only after brute force also fails on the
-already-canonical current state.
+mode. A diagram is treated as stable only after the non-monotone failover,
+brute force, and the final RIII failover all fail on the already-canonical
+current state.
 Verbose log lines are prefixed with local wall-clock time in
 `YYYY-MM-DD HH:MM:SS` format. When `--max-thread -1` reaches a brute-force
 search phase, verbose logs also include `actual_threads`, the worker count

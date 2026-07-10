@@ -169,11 +169,15 @@ In default heuristic mode, each round first runs a small deterministic RIII
 prepass. If this cheap prepass lowers the crossing count, the main loop starts
 over from the new canonical diagram before spending time on red-green path
 search. If the prepass cannot reduce the diagram, the heuristic red-green
-search runs. When the heuristic cannot find a witness, the simplifier runs a
-brute-force pass from the already-canonical current diagram. If brute force
-finds a witness, that witness is applied, canonicalized, and the loop continues
-in heuristic mode. If brute force also fails, the larger deterministic RIII
-failover described below is tried before the diagram is reported as final.
+search runs. When the heuristic cannot find a witness, the simplifier tries the
+deterministic non-monotone failover described below. If that failover finds a
+temporary sequence whose cleaned result lowers the crossing count, the sequence
+is applied, canonicalized, and the loop continues in heuristic mode. If the
+non-monotone failover also fails, the simplifier runs a brute-force pass from
+the already-canonical current diagram. If brute force finds a witness, that
+witness is applied, canonicalized, and the loop continues in heuristic mode. If
+brute force also fails, the larger deterministic RIII failover described below
+is tried before the diagram is reported as final.
 
 Brute-force search has a separate resource guard, `bruteforce_budget`, exposed
 as `--bruteforce-budget` in the CLIs. The default budget is `200000`
@@ -182,6 +186,44 @@ exhausted, the simplifier stops the current job, returns the best PD code known
 so far, and sets `resource_limited`. This is a safety result rather than a
 stability proof: it means the implementation deliberately stopped before
 finishing the brute-force proof attempt.
+
+## Deterministic Non-Monotone Failover
+
+Some diagrams need a short detour before a crossing-decreasing move becomes
+visible. The non-monotone failover is a deterministic beam search over
+temporary diagrams whose crossing count is allowed to stay the same or rise by
+a small fixed amount. It is used only after the normal heuristic red-green
+search misses a direct witness and before the terminal brute-force proof pass.
+
+Each beam node stores a canonical PD code, the explicit crossingless-component
+count, and the sequence of temporary steps that produced it. Candidate steps
+are generated in two ways:
+
+- apply a bounded number of deterministic RIII moves, then immediately run the
+  normal R1, R2, and nugatory cleanup;
+- sample short green paths with a fixed limited heuristic budget, apply only
+  witnesses accepted by the same red-green validator, and immediately run the
+  same cleanup.
+
+The candidate queue is bounded by fixed constants shared by C++ and Python:
+maximum red length `80`, maximum depth `72`, beam width `32`, at most `96`
+candidates per state, at most `4` accepted surgery candidates per red length,
+and at most `4,000,000` green-path tests for one non-monotone call. Candidate
+red paths are grouped by length, and ties are rotated by a stable FNV-1a hash of
+the canonical PD code. This makes the search deterministic while avoiding a
+single incidental red-path ordering from dominating every state.
+
+The failover accepts only a state whose cleaned crossing count is strictly
+smaller than the starting crossing count. When that happens, every stored step
+is replayed as a counted mid-simplification round and every intermediate PD
+code is canonicalized. If no such state is found within the fixed budgets, the
+algorithm continues to the brute-force proof pass.
+
+The failover is not a completeness proof: bounded beam search can miss a
+useful detour. It is sound because every accepted temporary surgery still comes
+from the same validated red-green witness application, every RIII candidate is
+a standard crossing-preserving local move, and every cleanup uses the ordinary
+R1/R2/nugatory deletion checks.
 
 ## Deterministic RIII Failover
 
@@ -282,10 +324,12 @@ crossed PD label would be split twice, or if the reconstructed active
 half-edge graph cannot be paired into valid PD labels. The final renumbering
 changes only labels, not the underlying diagram.
 
-Heuristic mode does not change this soundness argument because it only changes
-candidate ordering and sampling. It can miss a witness; it cannot make an
-unvalidated witness valid. Use `--ban-heuristic --max-paths -1` for complete
-green-path enumeration on inputs where that cost is acceptable.
+Heuristic and non-monotone modes do not change this soundness argument because
+they only change candidate ordering, sampling, and whether a bounded detour is
+searched before the terminal proof pass. They can miss a useful route; they
+cannot make an unvalidated witness valid. Use
+`--ban-heuristic --max-paths -1` for complete direct green-path enumeration on
+inputs where that cost is acceptable.
 
 The RIII failover is sound because each RIII step rewires only the six boundary
 arcs of a triangular face according to the standard Reidemeister-III local

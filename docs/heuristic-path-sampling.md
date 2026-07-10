@@ -36,6 +36,12 @@ also has a separate safety budget: `--bruteforce-budget 200000` by default,
 or `--bruteforce-budget -1` for no budget. Budget exhaustion returns the
 current best PD code with `resource_limited=true`.
 
+In the full high-level reduction loop, a heuristic miss is not immediately
+treated as stability. The simplifier first tries the deterministic
+non-monotone failover described in
+[Algorithm and Correctness](algorithm-and-correctness.md), then runs the
+brute-force proof pass if the failover does not lower the crossing count.
+
 ## Scoring
 
 For each source-target face pair, the heuristic first computes a reverse
@@ -103,7 +109,7 @@ still passes the same over/under propagation and disk-consistency checks used
 by brute-force mode.
 
 Therefore a witness reported by heuristic mode is sound. The heuristic is not
-complete: it can miss a witness that brute-force mode would find if the witness
-falls outside the sampled frontier. Use
+complete: it can miss a witness or a useful detour that later failover stages
+may find if it falls outside the sampled frontier. Use
 `--ban-heuristic --max-paths -1 --bruteforce-budget -1` when complete
 enumeration is required for a manageable input.

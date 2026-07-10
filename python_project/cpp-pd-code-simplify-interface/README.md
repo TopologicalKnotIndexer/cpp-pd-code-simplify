@@ -49,7 +49,10 @@ numbering unchanged while simplifying.
 The default `max_paths=-1` uses deterministic heuristic green-path sampling in
 the C++ backend. Use `ban_heuristic=True` to request exhaustive green-path
 enumeration for a manageable input. Use `reduction_round=K` to cap applied
-mid-simplification rounds; the default `-1` runs until stable. Use
+mid-simplification rounds; the default `-1` runs until stable. In default
+heuristic mode, a miss is followed by the native deterministic non-monotone
+failover, then a brute-force proof pass, then the RIII failover before the
+diagram is treated as stable. Use
 `timeout=K` to cap a call at `K` seconds; the default `-1` has no timeout. Use
 `verbose=True` to forward timestamped C++ progress logs to stderr. If a call
 times out, the returned dictionary still contains the best PD code found so far

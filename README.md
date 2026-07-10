@@ -93,9 +93,9 @@ Original lightweight benchmark:
 
 | Engine | Avg Time / PD Code (s) | Peak RSS (MiB) |
 | --- | ---: | ---: |
-| C++ CLI | 0.033047 | 11.852 |
-| Python C++ interface | 1.057039 | 60.316 |
-| Python | 1.709355 | 436.211 |
+| C++ CLI | 0.006480 | 6.344 |
+| Python C++ interface | 0.578396 | 79.598 |
+| Python | 1.700927 | 440.652 |
 
 Zip-random large-case benchmark:
 
@@ -103,9 +103,9 @@ Zip-random large-case benchmark:
 
 | Engine | Avg Time / PD Code (s) | Peak RSS (MiB) |
 | --- | ---: | ---: |
-| C++ CLI | 0.096687 | 6.430 |
-| Python C++ interface | 1.156787 | 61.621 |
-| Python | 0.691633 | 413.359 |
+| C++ CLI | 1.346003 | 13.270 |
+| Python C++ interface | 1.970066 | 84.641 |
+| Python | 5.994071 | 458.363 |
 
 This local run uses the deterministic benchmark set documented in
 [Benchmarking](docs/benchmarking.md). The lightweight suite is measured with

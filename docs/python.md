@@ -29,9 +29,10 @@ python mid_simplify_v5.py --pd-code "PD[X[1,5,2,4],X[3,1,4,6],X[5,3,6,2]]"
 Use `--json` for structured output containing `final_pd_code` and
 `final_crossings`. Use `--reduction-round K` to cap applied
 mid-simplification rounds; the default `-1` runs until stable. In heuristic
-mode, a heuristic miss is followed by a brute-force check before the current
-diagram is treated as stable. If brute force finds a witness, the next round
-returns to heuristic mode. Every generated PD code is canonicalized
+mode, a heuristic miss is followed by a deterministic non-monotone failover
+and then by a brute-force check before the current diagram is treated as
+stable. If either failover reduces the diagram, the next round returns to
+heuristic mode. Every generated PD code is canonicalized
 immediately after it is produced, including after each local cleanup deletion
 and after every applied witness. Use `--timeout K` to cap each PD-code job at
 `K` seconds; the default `-1` has no timeout. A timed-out job returns the best
@@ -76,6 +77,10 @@ print(result.to_json()["final_pd_code"])
 heuristic green-path sampling. Pass `ban_heuristic=True` with `max_paths=-1`
 to enumerate all green paths for a manageable input. `reduce_pd_code` is the
 high-level API that applies witnesses and returns the internal final PD code.
+The Python prototype uses the same deterministic non-monotone failover as the
+C++ implementation; repeated no-timeout searches inside one Python process
+cache exact search results for identical canonical PD codes and search
+settings.
 Use `result.to_json()["final_pd_code"]` or `format_final_pd_code(result.code)`
 when presenting the final PD code to users. The plain `format_pd_code`
 function preserves the internal tuple order and labels.

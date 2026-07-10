@@ -2,6 +2,7 @@
   "max_paths": -1,
   "reduction_round": -1,
   "max_thread": 16,
+  "bruteforce_budget": 200000,
   "repeat": 1,
   "suite": "random",
   "ban_heuristic": false,
@@ -14,9 +15,9 @@
       "case_count": 100,
       "engine": "cpp",
       "repeat": 1,
-      "time_seconds": 9.66867859987542,
-      "avg_time_per_case_seconds": 0.0966867859987542,
-      "peak_rss_mib": 6.4296875,
+      "time_seconds": 134.60027380000247,
+      "avg_time_per_case_seconds": 1.3460027380000248,
+      "peak_rss_mib": 13.26953125,
       "return_code": 0,
       "result_count": 100,
       "correctness_ok": true
@@ -28,9 +29,9 @@
       "case_count": 100,
       "engine": "interface",
       "repeat": 1,
-      "time_seconds": 115.67871770006604,
-      "avg_time_per_case_seconds": 1.1567871770006604,
-      "peak_rss_mib": 61.62109375,
+      "time_seconds": 197.00655749999714,
+      "avg_time_per_case_seconds": 1.9700655749999714,
+      "peak_rss_mib": 84.640625,
       "return_code": 0,
       "result_count": 100,
       "correctness_ok": true
@@ -42,9 +43,9 @@
       "case_count": 100,
       "engine": "python",
       "repeat": 1,
-      "time_seconds": 69.16330759995617,
-      "avg_time_per_case_seconds": 0.6916330759995617,
-      "peak_rss_mib": 413.359375,
+      "time_seconds": 599.4071278999982,
+      "avg_time_per_case_seconds": 5.994071278999981,
+      "peak_rss_mib": 458.36328125,
       "return_code": 0,
       "result_count": 100,
       "correctness_ok": true
@@ -58,9 +59,9 @@
       "case_count": 100,
       "engine": "cpp",
       "runs": 1,
-      "avg_time_seconds": 9.66867859987542,
-      "avg_time_per_case_seconds": 0.0966867859987542,
-      "avg_peak_rss_mib": 6.4296875,
+      "avg_time_seconds": 134.60027380000247,
+      "avg_time_per_case_seconds": 1.3460027380000248,
+      "avg_peak_rss_mib": 13.26953125,
       "return_codes": "0",
       "correctness": "ok"
     },
@@ -71,9 +72,9 @@
       "case_count": 100,
       "engine": "interface",
       "runs": 1,
-      "avg_time_seconds": 115.67871770006604,
-      "avg_time_per_case_seconds": 1.1567871770006604,
-      "avg_peak_rss_mib": 61.62109375,
+      "avg_time_seconds": 197.00655749999714,
+      "avg_time_per_case_seconds": 1.9700655749999714,
+      "avg_peak_rss_mib": 84.640625,
       "return_codes": "0",
       "correctness": "ok"
     },
@@ -84,28 +85,28 @@
       "case_count": 100,
       "engine": "python",
       "runs": 1,
-      "avg_time_seconds": 69.16330759995617,
-      "avg_time_per_case_seconds": 0.6916330759995617,
-      "avg_peak_rss_mib": 413.359375,
+      "avg_time_seconds": 599.4071278999982,
+      "avg_time_per_case_seconds": 5.994071278999981,
+      "avg_peak_rss_mib": 458.36328125,
       "return_codes": "0",
       "correctness": "ok"
     }
   ],
   "aggregate": {
     "cpp": {
-      "avg_time_seconds": 9.66867859987542,
-      "avg_time_per_case_seconds": 0.0966867859987542,
-      "avg_peak_rss_mib": 6.4296875
+      "avg_time_seconds": 134.60027380000247,
+      "avg_time_per_case_seconds": 1.3460027380000248,
+      "avg_peak_rss_mib": 13.26953125
     },
     "interface": {
-      "avg_time_seconds": 115.67871770006604,
-      "avg_time_per_case_seconds": 1.1567871770006604,
-      "avg_peak_rss_mib": 61.62109375
+      "avg_time_seconds": 197.00655749999714,
+      "avg_time_per_case_seconds": 1.9700655749999714,
+      "avg_peak_rss_mib": 84.640625
     },
     "python": {
-      "avg_time_seconds": 69.16330759995617,
-      "avg_time_per_case_seconds": 0.6916330759995617,
-      "avg_peak_rss_mib": 413.359375
+      "avg_time_seconds": 599.4071278999982,
+      "avg_time_per_case_seconds": 5.994071278999981,
+      "avg_peak_rss_mib": 458.36328125
     }
   }
 }

@@ -124,6 +124,11 @@ All three engines run the same default preprocessing pipeline before the
 mid-simplification search: R1-move removal, true R2-bigon removal, and
 nugatory-crossing removal. The Python prototype implements this preprocessing
 in Python, while the Python C++ interface reuses the C++ dynamic library.
+The Python prototype also runs the same deterministic non-monotone failover as
+the C++ backend. Within one no-timeout Python process, exact search results for
+identical canonical PD codes and search settings are cached; this avoids
+repeating the same expensive stability proof in batch-mode benchmarks without
+changing the returned JSON.
 
 ## Local Results
 
@@ -142,9 +147,9 @@ Original lightweight suite:
 
 | Engine | Average Time Per PD Code (s) | Average Peak RSS (MiB) |
 | --- | ---: | ---: |
-| C++ CLI | 0.033047 | 11.852 |
-| Python C++ interface | 1.057039 | 60.316 |
-| Python | 1.709355 | 436.211 |
+| C++ CLI | 0.006480 | 6.344 |
+| Python C++ interface | 0.578396 | 79.598 |
+| Python | 1.700927 | 440.652 |
 
 Zip-random large-case suite:
 
@@ -152,9 +157,9 @@ Zip-random large-case suite:
 
 | Engine | Average Time Per PD Code (s) | Average Peak RSS (MiB) |
 | --- | ---: | ---: |
-| C++ CLI | 0.096687 | 6.430 |
-| Python C++ interface | 1.156787 | 61.621 |
-| Python | 0.691633 | 413.359 |
+| C++ CLI | 1.346003 | 13.270 |
+| Python C++ interface | 1.970066 | 84.641 |
+| Python | 5.994071 | 458.363 |
 
 Summary CSV files are stored in
 [`docs/assets/benchmark_original_summary.csv`](assets/benchmark_original_summary.csv)
