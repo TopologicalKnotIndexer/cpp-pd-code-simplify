@@ -3199,6 +3199,31 @@ std::uint64_t reapr_seed_for_attempt(int attempt, int determinant, int crossings
     return splitmix64_next(state);
 }
 
+int conservative_reapr_drop_limit(int original_crossings) {
+    if (original_crossings <= 0) {
+        return 0;
+    }
+    const int percent_limit = (original_crossings + 19) / 20;
+    return std::min(original_crossings, std::max(4, percent_limit));
+}
+
+int conservative_reapr_min_crossings(int original_crossings) {
+    return std::max(0, original_crossings - conservative_reapr_drop_limit(original_crossings));
+}
+
+bool conservative_reapr_crossing_count_allowed(
+    std::size_t candidate_crossings,
+    int original_crossings) {
+    if (original_crossings <= 0) {
+        return candidate_crossings == 0;
+    }
+    if (candidate_crossings >= static_cast<std::size_t>(original_crossings)) {
+        return false;
+    }
+    return candidate_crossings >=
+        static_cast<std::size_t>(conservative_reapr_min_crossings(original_crossings));
+}
+
 PDCode closed_braid_pd_code(int strands, const std::vector<int>& word) {
     if (strands < 2 || word.empty()) {
         return {};
@@ -3249,8 +3274,9 @@ std::vector<PDCode> reapr_candidate_codes_for_attempt(
     int attempt) {
     std::vector<PDCode> candidates;
     std::set<std::string> seen;
-    const int maximum_candidate_crossings =
-        std::max(0, std::min(original_crossings - 1, 96));
+    const int minimum_candidate_crossings =
+        conservative_reapr_min_crossings(original_crossings);
+    const int maximum_candidate_crossings = std::max(0, original_crossings - 1);
 
     auto append_candidate = [&](const PDCode& candidate, bool allow_empty) {
         if (candidate.empty()) {
@@ -3292,12 +3318,17 @@ std::vector<PDCode> reapr_candidate_codes_for_attempt(
         append_candidate(closed_braid_pd_code(2, mirror_word), false);
     }
 
-    const int candidate_count = 12;
+    const int candidate_count = original_crossings > 160 ? 4 : 12;
     for (int candidate_index = 0; candidate_index < candidate_count; ++candidate_index) {
         const int strands = deterministic_random_int(state, 3, 7);
-        int minimum_length = 3;
+        int minimum_length = std::max(3, minimum_candidate_crossings);
         if (determinant > 1 && determinant < maximum_candidate_crossings) {
-            minimum_length = std::max(3, std::min(maximum_candidate_crossings, determinant - 4));
+            minimum_length = std::max(
+                minimum_length,
+                std::min(maximum_candidate_crossings, determinant - 4));
+        }
+        if (minimum_length > maximum_candidate_crossings) {
+            minimum_length = maximum_candidate_crossings;
         }
         const int length = deterministic_random_int(state, minimum_length, maximum_candidate_crossings);
         std::vector<int> word;
@@ -3382,10 +3413,48 @@ ReaprOracleResult try_reapr_oracle(
 
     bool saw_candidate = false;
     bool saw_rejected_candidate = false;
+    bool saw_overaggressive_candidate = false;
     reapr_invariant_guard::ReaprInvariantProfile before_basic_profile;
     reapr_invariant_guard::ReaprInvariantProfile before_full_profile;
     bool have_before_basic_profile = false;
     bool have_before_full_profile = false;
+
+    struct AcceptedCandidate {
+        bool present = false;
+        PDCode code;
+        std::size_t crossingless_components = 0;
+        std::size_t cleaned_crossings = 0;
+        std::string status;
+        std::string determinant_after;
+        std::string invariants_after;
+        std::string sort_key;
+    };
+    AcceptedCandidate best_candidate;
+
+    auto store_candidate = [&](const PDCode& candidate,
+                               std::size_t candidate_crossingless_components,
+                               const PDCode& cleaned_code,
+                               const std::string& status,
+                               const std::string& determinant_after,
+                               const std::string& invariants_after) {
+        const std::string key = format_final_pd_code(cleaned_code);
+        const bool better =
+            !best_candidate.present ||
+            cleaned_code.size() > best_candidate.cleaned_crossings ||
+            (cleaned_code.size() == best_candidate.cleaned_crossings &&
+             key < best_candidate.sort_key);
+        if (!better) {
+            return;
+        }
+        best_candidate.present = true;
+        best_candidate.code = candidate;
+        best_candidate.crossingless_components = candidate_crossingless_components;
+        best_candidate.cleaned_crossings = cleaned_code.size();
+        best_candidate.status = status;
+        best_candidate.determinant_after = determinant_after;
+        best_candidate.invariants_after = invariants_after;
+        best_candidate.sort_key = key;
+    };
 
     for (int attempt = 0; attempt < options.reapr_retry_max; ++attempt) {
         check_timeout(options);
@@ -3408,6 +3477,19 @@ ReaprOracleResult try_reapr_oracle(
                 continue;
             }
             saw_candidate = true;
+            if (!conservative_reapr_crossing_count_allowed(candidate.size(), static_cast<int>(code.size()))) {
+                saw_overaggressive_candidate = true;
+                result.rejected = true;
+                std::ostringstream message;
+                message << "reapr_attempt_rejected attempt=" << (attempt + 1)
+                        << " candidate=" << candidate_index
+                        << " reason=overaggressive_projection_drop"
+                        << " crossings=" << candidate.size()
+                        << " min_allowed="
+                        << conservative_reapr_min_crossings(static_cast<int>(code.size()));
+                emit_progress(options, message.str());
+                continue;
+            }
 
             const std::size_t candidate_crossingless_components =
                 crossingless_components_for_candidate(code, crossingless_components, candidate);
@@ -3463,24 +3545,68 @@ ReaprOracleResult try_reapr_oracle(
                 continue;
             }
 
-            result.accepted = true;
-            result.status = candidate.empty()
-                ? "accepted_empty_projection"
-                : (attempt == 0 ? "accepted_projection_template" : "accepted_retry_projection");
-            result.code = candidate;
-            result.crossingless_components = candidate_crossingless_components;
+            check_timeout(options);
+            const PDSimplificationResult cleaned_candidate =
+                simplify_pd_code(candidate, candidate_crossingless_components);
+            check_timeout(options);
+            const PDCode cleaned_code = canonical_output_code(cleaned_candidate.code);
+            if (!conservative_reapr_crossing_count_allowed(
+                    cleaned_code.size(), static_cast<int>(code.size()))) {
+                saw_overaggressive_candidate = true;
+                result.rejected = true;
+                std::ostringstream message;
+                message << "reapr_attempt_rejected attempt=" << (attempt + 1)
+                        << " candidate=" << candidate_index
+                        << " reason=post_cleanup_overaggressive_projection_drop"
+                        << " crossings=" << candidate.size()
+                        << " cleaned_crossings=" << cleaned_code.size()
+                        << " min_allowed="
+                        << conservative_reapr_min_crossings(static_cast<int>(code.size()));
+                emit_progress(options, message.str());
+                continue;
+            }
+
+            const std::string accepted_status = candidate.empty()
+                ? "accepted_conservative_empty_projection"
+                : (attempt == 0 ? "accepted_conservative_projection_template"
+                                : "accepted_conservative_retry_projection");
+            store_candidate(
+                candidate,
+                candidate_crossingless_components,
+                cleaned_code,
+                accepted_status,
+                result.determinant_after,
+                result.invariants_after);
             {
                 std::ostringstream message;
-                message << "reapr_attempt_accepted attempt=" << (attempt + 1)
+                message << "reapr_attempt_matched attempt=" << (attempt + 1)
                         << " candidate=" << candidate_index
-                        << " crossings=" << candidate.size();
+                        << " crossings=" << candidate.size()
+                        << " cleaned_crossings=" << cleaned_code.size();
                 emit_progress(options, message.str());
             }
-            return result;
+            if (cleaned_code.size() + 1 == code.size()) {
+                result.accepted = true;
+                result.status = best_candidate.status;
+                result.code = best_candidate.code;
+                result.crossingless_components = best_candidate.crossingless_components;
+                result.determinant_after = best_candidate.determinant_after;
+                result.invariants_after = best_candidate.invariants_after;
+                return result;
+            }
         }
     }
 
-    if (saw_rejected_candidate) {
+    if (best_candidate.present) {
+        result.accepted = true;
+        result.status = best_candidate.status;
+        result.code = best_candidate.code;
+        result.crossingless_components = best_candidate.crossingless_components;
+        result.determinant_after = best_candidate.determinant_after;
+        result.invariants_after = best_candidate.invariants_after;
+    } else if (saw_overaggressive_candidate) {
+        result.status = "rejected_overaggressive_projection";
+    } else if (saw_rejected_candidate) {
         result.status = "rejected_invariant_changed";
     } else if (saw_candidate) {
         result.status = "rejected_no_matching_profile";

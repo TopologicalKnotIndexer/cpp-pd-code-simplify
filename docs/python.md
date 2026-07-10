@@ -57,10 +57,13 @@ because it can be large and shares stdout with JSON/text results.
 Use `--reapr` to enable the same experimental invariant-guarded projection
 oracle as the C++ implementation. It checks component count, Alexander
 determinant, Goeritz signature, and Alexander roots over `F_11`, `F_19`, and
-`F_31` before accepting a candidate. It is disabled by default and can still
-change the knot or link type; output includes `reapr_warning` when the oracle
-is used. Use `--reapr-retry-max N` to cap the deterministic retry sequence;
-the default is `3`, and `0` disables REAPR candidate attempts.
+`F_31` before accepting a candidate. The oracle is conservative: for `n`
+current crossings, the raw candidate and its R1/R2/nugatory cleanup must both
+keep at least `n - max(4, ceil(n / 20))` crossings, and accepted candidates
+return to the normal iterative simplification loop. It is disabled by default
+and can still change the knot or link type; output includes `reapr_warning`
+when the oracle is used. Use `--reapr-retry-max N` to cap the deterministic
+retry sequence; the default is `3`, and `0` disables REAPR candidate attempts.
 Use `--log-file FILEPATH` to tee stdout and stderr into a flushed backup log
 file while keeping the normal terminal output unchanged.
 

@@ -100,11 +100,13 @@ flushed backup log file.
 
 Pass `reapr=True`, or use CLI flag `--reapr`, to enable the experimental
 invariant-guarded projection oracle in the native backend. It is disabled by
-default and can still change the knot or link type. Accepted output includes
-`reapr_warning`, determinant guard fields, and before/after invariant profile
-strings for independent checking. Pass `reapr_retry_max=N`, or CLI flag
-`--reapr-retry-max N`, to control the deterministic retry cap; the default is
-`3`.
+default and can still change the knot or link type. For `n` current crossings,
+the raw candidate and its R1/R2/nugatory cleanup must both keep at least
+`n - max(4, ceil(n / 20))` crossings before the invariant profile is allowed
+to accept it. Accepted output includes `reapr_warning`, determinant guard
+fields, and before/after invariant profile strings for independent checking.
+Pass `reapr_retry_max=N`, or CLI flag `--reapr-retry-max N`, to control the
+deterministic retry cap; the default is `3`.
 
 Pass `show_step_pd=True`, or use CLI flag `--show-step-pd`, to print
 `step_pd_code[ROUND]: PD[...]` to stdout after each mid-simplification witness

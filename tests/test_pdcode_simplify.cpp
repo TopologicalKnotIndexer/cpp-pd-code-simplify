@@ -402,26 +402,23 @@ void test_reapr_pd_k0_fixture_rejects_unsafe_projection() {
     pdcode_simplify::SimplifierOptions options;
     options.enable_reapr = true;
     options.max_threads = 1;
+    options.reapr_retry_max = 1;
     const auto reduced = pdcode_simplify::reduce_pd_code(code, 0, options, 0);
 
     require(!reduced.reapr_used,
-            "strict REAPR guards should not accept the unsafe pd_k0 projection template");
-    require(reduced.reapr_attempts == 3,
-            "strict REAPR guard should use the default three deterministic attempts");
+            "conservative REAPR guards should not accept the unsafe pd_k0 projection template");
+    require(reduced.reapr_attempts == 1,
+            "conservative REAPR test should only exercise the projection template");
     require(reduced.reapr_rejected,
-            "strict REAPR guards should report the unsafe pd_k0 candidate as rejected");
-    require(reduced.reapr_status == "rejected_invariant_changed",
-            "strict REAPR guards should reject pd_k0 because an invariant changed");
+            "conservative REAPR guards should report the unsafe pd_k0 candidate as rejected");
+    require(reduced.reapr_status == "rejected_overaggressive_projection",
+            "conservative REAPR guards should reject pd_k0 because the drop is too large");
     require(reduced.code.size() == code.size(),
             "rejected REAPR candidates should keep the current best PD code");
     require(!reduced.alexander_determinant_before.empty(),
             "REAPR oracle should report the determinant guard before value");
     require(!reduced.alexander_determinant_after.empty(),
             "REAPR oracle should report the determinant guard after value for a rejected candidate");
-    require(!reduced.reapr_invariants_before.empty() && !reduced.reapr_invariants_after.empty(),
-            "strict REAPR guards should report before/after invariant profiles");
-    require(reduced.reapr_invariants_before != reduced.reapr_invariants_after,
-            "pd_k0 unsafe candidate should have a different invariant profile");
 }
 
 }  // namespace

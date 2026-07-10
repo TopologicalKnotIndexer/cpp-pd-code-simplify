@@ -3883,6 +3883,28 @@ def _reapr_seed_for_attempt(attempt: int, determinant: int, crossings: int) -> i
     return value
 
 
+def _conservative_reapr_drop_limit(original_crossings: int) -> int:
+    if original_crossings <= 0:
+        return 0
+    percent_limit = (original_crossings + 19) // 20
+    return min(original_crossings, max(4, percent_limit))
+
+
+def _conservative_reapr_min_crossings(original_crossings: int) -> int:
+    return max(0, original_crossings - _conservative_reapr_drop_limit(original_crossings))
+
+
+def _conservative_reapr_crossing_count_allowed(
+    candidate_crossings: int,
+    original_crossings: int,
+) -> bool:
+    if original_crossings <= 0:
+        return candidate_crossings == 0
+    if candidate_crossings >= original_crossings:
+        return False
+    return candidate_crossings >= _conservative_reapr_min_crossings(original_crossings)
+
+
 def _closed_braid_pd_code(strands: int, word: Sequence[int]) -> PDCode:
     if strands < 2 or not word:
         return []
@@ -3924,7 +3946,8 @@ def _reapr_candidate_codes_for_attempt(
 ) -> List[PDCode]:
     candidates: List[PDCode] = []
     seen: Set[str] = set()
-    maximum_candidate_crossings = max(0, min(original_crossings - 1, 96))
+    minimum_candidate_crossings = _conservative_reapr_min_crossings(original_crossings)
+    maximum_candidate_crossings = max(0, original_crossings - 1)
 
     def append_candidate(candidate: PDCode, allow_empty: bool) -> None:
         if not candidate:
@@ -3953,11 +3976,17 @@ def _reapr_candidate_codes_for_attempt(
     if determinant > 1 and determinant % 2 and determinant <= maximum_candidate_crossings:
         append_candidate(_closed_braid_pd_code(2, [-1] * determinant), False)
 
-    for _candidate_index in range(12):
+    candidate_count = 4 if original_crossings > 160 else 12
+    for _candidate_index in range(candidate_count):
         state, strands = _deterministic_random_int(state, 3, 7)
-        minimum_length = 3
+        minimum_length = max(3, minimum_candidate_crossings)
         if determinant > 1 and determinant < maximum_candidate_crossings:
-            minimum_length = max(3, min(maximum_candidate_crossings, determinant - 4))
+            minimum_length = max(
+                minimum_length,
+                min(maximum_candidate_crossings, determinant - 4),
+            )
+        if minimum_length > maximum_candidate_crossings:
+            minimum_length = maximum_candidate_crossings
         state, length = _deterministic_random_int(
             state,
             minimum_length,
@@ -4035,8 +4064,36 @@ def _try_reapr_oracle(
 
     saw_candidate = False
     saw_rejected_candidate = False
+    saw_overaggressive_candidate = False
     before_basic_profile: Optional[ReaprInvariantProfile] = None
     before_full_profile: Optional[ReaprInvariantProfile] = None
+    best_candidate: Optional[
+        Tuple[int, str, PDCode, int, str, str, str]
+    ] = None
+
+    def store_candidate(
+        candidate: PDCode,
+        candidate_crossingless_components: int,
+        cleaned_code: PDCode,
+        status: str,
+        determinant_after: str,
+        invariants_after: str,
+    ) -> None:
+        nonlocal best_candidate
+        key = format_final_pd_code(cleaned_code)
+        item = (
+            len(cleaned_code),
+            key,
+            [tuple(crossing) for crossing in candidate],
+            candidate_crossingless_components,
+            status,
+            determinant_after,
+            invariants_after,
+        )
+        if best_candidate is None or item[0] > best_candidate[0] or (
+            item[0] == best_candidate[0] and item[1] < best_candidate[1]
+        ):
+            best_candidate = item
 
     for attempt in range(reapr_retry_max):
         check_timeout(timeout, deadline)
@@ -4047,6 +4104,10 @@ def _try_reapr_oracle(
             if len(candidate) >= len(code):
                 continue
             saw_candidate = True
+            if not _conservative_reapr_crossing_count_allowed(len(candidate), len(code)):
+                saw_overaggressive_candidate = True
+                result.rejected = True
+                continue
             candidate_crossingless_components = _crossingless_components_for_candidate(
                 code, crossingless_components, candidate
             )
@@ -4100,17 +4161,55 @@ def _try_reapr_oracle(
                 result.rejected = True
                 continue
 
-            result.accepted = True
-            result.status = (
-                "accepted_empty_projection"
-                if not candidate
-                else ("accepted_projection_template" if attempt == 0 else "accepted_retry_projection")
+            cleaned_candidate = simplify_pd_code(
+                candidate,
+                candidate_crossingless_components,
+                timeout,
+                deadline,
             )
-            result.code = candidate
-            result.crossingless_components = candidate_crossingless_components
-            return result
+            cleaned_code = _canonical_output_code(cleaned_candidate.code)
+            if not _conservative_reapr_crossing_count_allowed(len(cleaned_code), len(code)):
+                saw_overaggressive_candidate = True
+                result.rejected = True
+                continue
 
-    if saw_rejected_candidate:
+            accepted_status = (
+                "accepted_conservative_empty_projection"
+                if not candidate
+                else (
+                    "accepted_conservative_projection_template"
+                    if attempt == 0
+                    else "accepted_conservative_retry_projection"
+                )
+            )
+            store_candidate(
+                candidate,
+                candidate_crossingless_components,
+                cleaned_code,
+                accepted_status,
+                result.determinant_after,
+                result.invariants_after,
+            )
+            if len(cleaned_code) + 1 == len(code):
+                assert best_candidate is not None
+                result.accepted = True
+                result.status = best_candidate[4]
+                result.code = best_candidate[2]
+                result.crossingless_components = best_candidate[3]
+                result.determinant_after = best_candidate[5]
+                result.invariants_after = best_candidate[6]
+                return result
+
+    if best_candidate is not None:
+        result.accepted = True
+        result.status = best_candidate[4]
+        result.code = best_candidate[2]
+        result.crossingless_components = best_candidate[3]
+        result.determinant_after = best_candidate[5]
+        result.invariants_after = best_candidate[6]
+    elif saw_overaggressive_candidate:
+        result.status = "rejected_overaggressive_projection"
+    elif saw_rejected_candidate:
         result.status = "rejected_invariant_changed"
     elif saw_candidate:
         result.status = "rejected_no_matching_profile"

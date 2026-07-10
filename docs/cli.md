@@ -145,11 +145,14 @@ selected for that phase.
 experimental deterministic reembedding/projection oracle after the default
 R1/R2/nugatory preprocessing and before the mid-simplification search. The
 oracle accepts a candidate only when it has fewer crossings and the internal
-invariant profile is unchanged. The profile includes total component count,
-Alexander determinant, Goeritz signature, and Alexander roots over `F_11`,
-`F_19`, and `F_31`. This guard is stricter than determinant alone, but it is
-not a proof that the output is the same knot or link. Output therefore
-includes `reapr_used`, `reapr_status`, `reapr_warning`,
+invariant profile is unchanged. It also uses a conservative step window: for
+`n` current crossings, the raw candidate and its R1/R2/nugatory cleanup must
+both keep at least `n - max(4, ceil(n / 20))` crossings. Accepted candidates
+return to the normal iterative simplification loop. The profile includes total
+component count, Alexander determinant, Goeritz signature, and Alexander roots
+over `F_11`, `F_19`, and `F_31`. This guard is stricter than determinant
+alone, but it is not a proof that the output is the same knot or link. Output
+therefore includes `reapr_used`, `reapr_status`, `reapr_warning`,
 `alexander_determinant_before`, `alexander_determinant_after`,
 `reapr_invariants_before`, and `reapr_invariants_after`. Treat any `--reapr`
 result as a candidate that still needs independent invariant checks.

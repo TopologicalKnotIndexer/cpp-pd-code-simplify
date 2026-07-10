@@ -280,15 +280,22 @@ the Python prototype. The determinant code is isolated in the C++ namespace
 construction, the same finite-field primes, and the same acceptance order.
 
 For a one-component input, the oracle tries a deterministic projection
-candidate only when it can make the crossing count smaller:
+candidate only when it can make the crossing count smaller. The acceptance
+policy is deliberately conservative: for a diagram with `n` crossings, a REAPR
+candidate is considered only if both the raw candidate and the candidate after
+ordinary R1/R2/nugatory cleanup still have at least
+`n - max(4, ceil(n / 20))` crossings. This prevents the oracle from accepting
+an extremely small projection just because the current invariant profile is too
+coarse to reject it.
 
 - determinant `1` proposes the empty unknot projection;
 - an odd determinant `d > 1` proposes the canonical `(2,d)` torus-knot
   projection template, but only when `d` is below the current crossing count.
 
 If the first template is rejected, the oracle may continue through a bounded
-deterministic retry sequence. Each retry seed generates a small closed-braid
-candidate pool using the same pseudo-random integer stream in C++ and Python.
+deterministic retry sequence. Each retry seed generates a closed-braid
+candidate pool inside the same conservative crossing window using the same
+pseudo-random integer stream in C++ and Python.
 The default cap is three attempts; `--reapr-retry-max N` changes that cap, and
 `0` disables REAPR candidate attempts. These retries are deterministic because
 the seed for attempt `i` is derived only from `i`, the determinant, and the
@@ -305,9 +312,12 @@ original diagram exactly:
 
 For efficiency, the implementation first checks component count,
 determinant, and Goeritz signature. The three finite-field root sets are
-computed only after those faster checks match. Accepted results then run
-through the ordinary R1/R2/nugatory cleanup and continue into the normal
-reduction loop.
+computed only after those faster checks match. If more than one candidate
+matches, the oracle chooses the candidate whose cleaned crossing count is
+closest to the current crossing count, with deterministic PD-code text as the
+tie-breaker. Accepted results then run through the ordinary R1/R2/nugatory
+cleanup and continue into the normal reduction loop, starting again from the
+heuristic witness search when heuristics are enabled.
 
 This guard is stronger than the original determinant-only screen, but it is
 still not a proof that two knots or links are equivalent. The output therefore
@@ -316,10 +326,11 @@ carries `reapr_warning`, `reapr_status`, `alexander_determinant_before`,
 `reapr_invariants_after`. Users who enable `--reapr` should still verify
 independent invariants, for example with Khovanov homology. The project tests
 include a `pd_k0.txt` regression fixture where the determinant-preserving
-projection template is rejected because the stronger invariant profile changes.
-The current retry pool is still not strong enough to simplify that fixture
-under the strict guard; it leaves the diagram unchanged rather than accepting
-an unsafe candidate.
+projection template is rejected by the conservative crossing window before it
+can collapse a 481-crossing diagram to an extremely small projection. The
+current retry pool is still not strong enough to simplify that fixture under
+the strict guard; it leaves the diagram unchanged rather than accepting an
+unsafe candidate.
 
 ## Component Accounting
 

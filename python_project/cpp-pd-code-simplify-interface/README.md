@@ -69,8 +69,10 @@ the C++ backend for that phase. The backend call runs in a helper process, so
 flushed backup log file.
 Use `reapr=True`, or CLI flag `--reapr`, only for the experimental
 invariant-guarded projection oracle. It can change the knot or link type;
-accepted output includes `reapr_warning`, determinant guard fields, and
-before/after invariant profile strings. Use `reapr_retry_max=N`, or CLI flag
+for `n` current crossings, both the raw candidate and its R1/R2/nugatory
+cleanup must keep at least `n - max(4, ceil(n / 20))` crossings. Accepted
+output includes `reapr_warning`, determinant guard fields, and before/after
+invariant profile strings. Use `reapr_retry_max=N`, or CLI flag
 `--reapr-retry-max N`, to control the deterministic retry cap.
 Use `show_step_pd=True`, or CLI flag `--show-step-pd`, to print
 `step_pd_code[ROUND]: PD[...]` to stdout after each mid-simplification witness
