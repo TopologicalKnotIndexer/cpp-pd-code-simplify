@@ -88,9 +88,11 @@ options.progress = [](const std::string& message) {
 ```
 
 Set `options.enable_reapr = true` only when you want the experimental
-determinant-guarded projection oracle. This option can change the knot or link
-type; accepted output sets `result.reapr_warning` and must be checked with
-stronger invariants independently.
+invariant-guarded projection oracle. This option can change the knot or link
+type; accepted output sets `result.reapr_warning` and reports
+`result.reapr_invariants_before` and `result.reapr_invariants_after` for
+independent checking. Set `options.reapr_retry_max` to control the deterministic
+retry cap; the default is `3`.
 
 ## Translation Units
 

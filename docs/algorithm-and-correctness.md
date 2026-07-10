@@ -273,10 +273,11 @@ for hard diagrams where the certified red-green witness search cannot make
 progress, and it is disabled by default.
 
 The internal implementation does not call REAPR, Knoodle, SnapPy, or
-`pd-code-to-diagram`. It computes a cheap Alexander determinant fingerprint
-from a Fox coloring matrix over several fixed prime fields. The determinant
-code is isolated in the C++ namespace `alexander_determinant_guard`, with the
-Python prototype using the same matrix construction and the same primes.
+`pd-code-to-diagram`. It computes its guard invariants directly in C++ and in
+the Python prototype. The determinant code is isolated in the C++ namespace
+`alexander_determinant_guard`; the stricter REAPR acceptance profile is in
+`reapr_invariant_guard`. The Python prototype uses the same matrix
+construction, the same finite-field primes, and the same acceptance order.
 
 For a one-component input, the oracle tries a deterministic projection
 candidate only when it can make the crossing count smaller:
@@ -285,20 +286,40 @@ candidate only when it can make the crossing count smaller:
 - an odd determinant `d > 1` proposes the canonical `(2,d)` torus-knot
   projection template, but only when `d` is below the current crossing count.
 
+If the first template is rejected, the oracle may continue through a bounded
+deterministic retry sequence. Each retry seed generates a small closed-braid
+candidate pool using the same pseudo-random integer stream in C++ and Python.
+The default cap is three attempts; `--reapr-retry-max N` changes that cap, and
+`0` disables REAPR candidate attempts. These retries are deterministic because
+the seed for attempt `i` is derived only from `i`, the determinant, and the
+current crossing count.
+
 The candidate is canonicalized through the same final PD formatter used by the
-rest of the project. It is accepted only if its Alexander determinant
-fingerprint exactly matches the original fingerprint. Accepted results then
-run through the ordinary R1/R2/nugatory cleanup and continue into the normal
+rest of the project. It is accepted only if the following profile matches the
+original diagram exactly:
+
+- total component count, including crossingless components;
+- Alexander determinant fingerprint;
+- sorted Goeritz signature pair from the two checkerboard color classes;
+- nonzero Alexander roots over `F_11`, `F_19`, and `F_31`.
+
+For efficiency, the implementation first checks component count,
+determinant, and Goeritz signature. The three finite-field root sets are
+computed only after those faster checks match. Accepted results then run
+through the ordinary R1/R2/nugatory cleanup and continue into the normal
 reduction loop.
 
-This guard is deliberately weak: equality of the Alexander determinant does
-not prove that two knots or links are equivalent. The output therefore carries
-`reapr_warning`, `reapr_status`, `alexander_determinant_before`, and
-`alexander_determinant_after`. Users who enable `--reapr` must verify stronger
-invariants independently, for example with Khovanov homology. The project
-tests include a `pd_k0.txt` regression fixture where the C++ implementation
-with `--reapr` must reduce the crossing count below the original 481 crossings,
-but that test only checks the oracle path and determinant guard behavior.
+This guard is stronger than the original determinant-only screen, but it is
+still not a proof that two knots or links are equivalent. The output therefore
+carries `reapr_warning`, `reapr_status`, `alexander_determinant_before`,
+`alexander_determinant_after`, `reapr_invariants_before`, and
+`reapr_invariants_after`. Users who enable `--reapr` should still verify
+independent invariants, for example with Khovanov homology. The project tests
+include a `pd_k0.txt` regression fixture where the determinant-preserving
+projection template is rejected because the stronger invariant profile changes.
+The current retry pool is still not strong enough to simplify that fixture
+under the strict guard; it leaves the diagram unchanged rather than accepting
+an unsafe candidate.
 
 ## Component Accounting
 
@@ -373,7 +394,7 @@ and nugatory deletions are local Reidemeister or nugatory simplifications, and
 the same half-edge pairing checks used elsewhere reject invalid rewrites.
 
 The experimental `--reapr` oracle is not covered by this soundness argument.
-Its determinant guard is a screening check, not an equivalence proof. This is
+Its invariant guard is a screening check, not an equivalence proof. This is
 why the option is opt-in and why accepted output carries an explicit warning.
 
 The component accounting is correct because a component is represented by

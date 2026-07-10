@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -66,6 +67,7 @@ struct SimplifierOptions {
     int max_threads = -1;
     int timeout_seconds = -1;
     long long bruteforce_budget = 200000;
+    int reapr_retry_max = 3;
     bool has_timeout_deadline = false;
     std::chrono::steady_clock::time_point timeout_deadline{};
     bool ban_heuristic = false;
@@ -147,10 +149,13 @@ struct ReductionResult {
     bool reapr_used = false;
     bool reapr_rejected = false;
     int reapr_rounds = 0;
+    int reapr_attempts = 0;
     std::string reapr_status;
     std::string reapr_warning;
     std::string alexander_determinant_before;
     std::string alexander_determinant_after;
+    std::string reapr_invariants_before;
+    std::string reapr_invariants_after;
     bool stopped_by_round_limit = false;
     bool timed_out = false;
     bool resource_limited = false;
@@ -237,7 +242,8 @@ constexpr std::size_t kNonMonotoneMaxGreenTestsPerState = 4096;
 constexpr std::size_t kNonMonotoneMaxTotalGreenTests = 4000000;
 constexpr const char* kReaprWarning =
     "WARNING: --reapr uses a deterministic internal reembedding/projection oracle "
-    "guarded only by the Alexander determinant. The resulting PD code may represent "
+    "guarded by component count, Alexander determinant, Goeritz signature, and "
+    "finite-field Alexander root checks. The resulting PD code may still represent "
     "a different knot or link; verify additional invariants independently.";
 
 int positive_mod(int value, int modulus) {
@@ -2507,6 +2513,9 @@ void validate_timeout_options(const SimplifierOptions& options) {
     if (options.bruteforce_budget < -1 || options.bruteforce_budget == 0) {
         throw std::invalid_argument("bruteforce budget must be -1 or a positive integer");
     }
+    if (options.reapr_retry_max < 0) {
+        throw std::invalid_argument("reapr retry max must be a non-negative integer");
+    }
 }
 
 class TimeoutError : public std::runtime_error {
@@ -2725,6 +2734,422 @@ int single_small_determinant_value(const std::vector<int>& fingerprint) {
 
 }  // namespace alexander_determinant_guard
 
+namespace reapr_invariant_guard {
+
+struct ReaprInvariantProfile {
+    std::size_t components = 0;
+    std::vector<int> determinant_fingerprint;
+    std::vector<int> goeritz_signature_pair;
+    bool alexander_roots_evaluated = false;
+    std::vector<int> alexander_roots_mod_11;
+    std::vector<int> alexander_roots_mod_19;
+    std::vector<int> alexander_roots_mod_31;
+};
+
+bool same_basic_profile(const ReaprInvariantProfile& left, const ReaprInvariantProfile& right) {
+    return left.components == right.components &&
+           left.determinant_fingerprint == right.determinant_fingerprint &&
+           left.goeritz_signature_pair == right.goeritz_signature_pair;
+}
+
+bool same_profile(const ReaprInvariantProfile& left, const ReaprInvariantProfile& right) {
+    return same_basic_profile(left, right) &&
+           left.alexander_roots_evaluated &&
+           right.alexander_roots_evaluated &&
+           left.alexander_roots_mod_11 == right.alexander_roots_mod_11 &&
+           left.alexander_roots_mod_19 == right.alexander_roots_mod_19 &&
+           left.alexander_roots_mod_31 == right.alexander_roots_mod_31;
+}
+
+std::string int_vector_string(const std::vector<int>& values) {
+    std::ostringstream out;
+    out << '[';
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << values[i];
+    }
+    out << ']';
+    return out.str();
+}
+
+std::vector<int> checkerboard_face_colors(const DualGraph& graph) {
+    std::vector<int> colors(graph.faces.size(), -1);
+    for (int start = 0; start < static_cast<int>(colors.size()); ++start) {
+        if (colors[static_cast<std::size_t>(start)] != -1) {
+            continue;
+        }
+        colors[static_cast<std::size_t>(start)] = 0;
+        std::queue<int> frontier;
+        frontier.push(start);
+        while (!frontier.empty()) {
+            const int face = frontier.front();
+            frontier.pop();
+            for (int edge_index : graph.adjacency[static_cast<std::size_t>(face)]) {
+                const GraphEdge& edge = graph.edges[static_cast<std::size_t>(edge_index)];
+                const int neighbor = edge.u == face ? edge.v : edge.u;
+                const int expected = 1 - colors[static_cast<std::size_t>(face)];
+                int& neighbor_color = colors[static_cast<std::size_t>(neighbor)];
+                if (neighbor_color == -1) {
+                    neighbor_color = expected;
+                    frontier.push(neighbor);
+                }
+            }
+        }
+    }
+    return colors;
+}
+
+void swap_symmetric_rows_and_columns(
+    std::vector<std::vector<long double>>& matrix,
+    int first,
+    int second) {
+    if (first == second) {
+        return;
+    }
+    std::swap(matrix[static_cast<std::size_t>(first)],
+              matrix[static_cast<std::size_t>(second)]);
+    for (std::vector<long double>& row : matrix) {
+        std::swap(row[static_cast<std::size_t>(first)],
+                  row[static_cast<std::size_t>(second)]);
+    }
+}
+
+int symmetric_matrix_signature(std::vector<std::vector<long double>> matrix) {
+    const long double eps = 1e-10L;
+    const int n = static_cast<int>(matrix.size());
+    int positive = 0;
+    int negative = 0;
+    int k = 0;
+    while (k < n) {
+        int diagonal_pivot = -1;
+        for (int i = k; i < n; ++i) {
+            if (std::fabs(matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(i)]) > eps) {
+                diagonal_pivot = i;
+                break;
+            }
+        }
+        if (diagonal_pivot != -1) {
+            swap_symmetric_rows_and_columns(matrix, k, diagonal_pivot);
+            const long double pivot =
+                matrix[static_cast<std::size_t>(k)][static_cast<std::size_t>(k)];
+            if (pivot > 0) {
+                ++positive;
+            } else {
+                ++negative;
+            }
+            for (int i = k + 1; i < n; ++i) {
+                for (int j = i; j < n; ++j) {
+                    matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] -=
+                        matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(k)] *
+                        matrix[static_cast<std::size_t>(k)][static_cast<std::size_t>(j)] /
+                        pivot;
+                    matrix[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] =
+                        matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)];
+                }
+            }
+            ++k;
+            continue;
+        }
+
+        int first = -1;
+        int second = -1;
+        for (int i = k; i < n && first == -1; ++i) {
+            for (int j = i + 1; j < n; ++j) {
+                if (std::fabs(matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)]) >
+                    eps) {
+                    first = i;
+                    second = j;
+                    break;
+                }
+            }
+        }
+        if (first == -1) {
+            break;
+        }
+        swap_symmetric_rows_and_columns(matrix, k, first);
+        if (second == k) {
+            second = first;
+        }
+        swap_symmetric_rows_and_columns(matrix, k + 1, second);
+
+        const long double a = matrix[static_cast<std::size_t>(k)][static_cast<std::size_t>(k)];
+        const long double b = matrix[static_cast<std::size_t>(k)][static_cast<std::size_t>(k + 1)];
+        const long double d =
+            matrix[static_cast<std::size_t>(k + 1)][static_cast<std::size_t>(k + 1)];
+        const long double determinant = a * d - b * b;
+        if (std::fabs(determinant) <= eps) {
+            break;
+        }
+        if (determinant < 0) {
+            ++positive;
+            ++negative;
+        } else if (a + d > 0) {
+            positive += 2;
+        } else {
+            negative += 2;
+        }
+
+        const long double inverse00 = d / determinant;
+        const long double inverse01 = -b / determinant;
+        const long double inverse11 = a / determinant;
+        for (int i = k + 2; i < n; ++i) {
+            const long double vi0 =
+                matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(k)];
+            const long double vi1 =
+                matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(k + 1)];
+            for (int j = i; j < n; ++j) {
+                const long double vj0 =
+                    matrix[static_cast<std::size_t>(k)][static_cast<std::size_t>(j)];
+                const long double vj1 =
+                    matrix[static_cast<std::size_t>(k + 1)][static_cast<std::size_t>(j)];
+                const long double correction =
+                    vi0 * (inverse00 * vj0 + inverse01 * vj1) +
+                    vi1 * (inverse01 * vj0 + inverse11 * vj1);
+                matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] -= correction;
+                matrix[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] =
+                    matrix[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)];
+            }
+        }
+        k += 2;
+    }
+    return positive - negative;
+}
+
+int goeritz_signature_for_color(
+    const Diagram& diagram,
+    const DualGraph& graph,
+    const std::vector<int>& face_colors,
+    int selected_color) {
+    std::vector<int> selected_faces;
+    selected_faces.reserve(graph.faces.size());
+    for (int face = 0; face < static_cast<int>(face_colors.size()); ++face) {
+        if (face_colors[static_cast<std::size_t>(face)] == selected_color) {
+            selected_faces.push_back(face);
+        }
+    }
+    if (selected_faces.empty()) {
+        return 0;
+    }
+
+    std::vector<int> face_to_matrix(graph.faces.size(), -2);
+    for (std::size_t i = 1; i < selected_faces.size(); ++i) {
+        face_to_matrix[static_cast<std::size_t>(selected_faces[i])] =
+            static_cast<int>(i - 1);
+    }
+    const int matrix_size = static_cast<int>(selected_faces.size()) - 1;
+    std::vector<std::vector<long double>> matrix(
+        static_cast<std::size_t>(matrix_size),
+        std::vector<long double>(static_cast<std::size_t>(matrix_size), 0.0L));
+    int correction = 0;
+
+    for (int crossing = 0; crossing < static_cast<int>(diagram.crossings.size()); ++crossing) {
+        std::array<int, 4> face{};
+        for (int strand = 0; strand < 4; ++strand) {
+            face[static_cast<std::size_t>(strand)] =
+                graph.edge_to_face[static_cast<std::size_t>(endpoint_key(Endpoint{crossing, strand}))];
+        }
+
+        int first_face = -1;
+        int second_face = -1;
+        int eta = 0;
+        if (face_colors[static_cast<std::size_t>(face[0])] == selected_color &&
+            face_colors[static_cast<std::size_t>(face[2])] == selected_color) {
+            first_face = face[0];
+            second_face = face[2];
+            eta = diagram.crossings[static_cast<std::size_t>(crossing)].sign;
+        } else if (face_colors[static_cast<std::size_t>(face[1])] == selected_color &&
+                   face_colors[static_cast<std::size_t>(face[3])] == selected_color) {
+            first_face = face[1];
+            second_face = face[3];
+            eta = -diagram.crossings[static_cast<std::size_t>(crossing)].sign;
+        } else {
+            continue;
+        }
+
+        if (eta == diagram.crossings[static_cast<std::size_t>(crossing)].sign) {
+            correction += eta;
+        }
+
+        if (first_face == second_face) {
+            continue;
+        }
+        const int first_index = face_to_matrix[static_cast<std::size_t>(first_face)];
+        const int second_index = face_to_matrix[static_cast<std::size_t>(second_face)];
+        if (first_index >= 0) {
+            matrix[static_cast<std::size_t>(first_index)][static_cast<std::size_t>(first_index)] +=
+                eta;
+        }
+        if (second_index >= 0) {
+            matrix[static_cast<std::size_t>(second_index)][static_cast<std::size_t>(second_index)] +=
+                eta;
+        }
+        if (first_index >= 0 && second_index >= 0) {
+            matrix[static_cast<std::size_t>(first_index)][static_cast<std::size_t>(second_index)] -=
+                eta;
+            matrix[static_cast<std::size_t>(second_index)][static_cast<std::size_t>(first_index)] -=
+                eta;
+        }
+    }
+
+    return symmetric_matrix_signature(std::move(matrix)) - correction;
+}
+
+std::vector<int> goeritz_signature_pair(const PDCode& raw_code) {
+    if (raw_code.empty()) {
+        return std::vector<int>{0, 0};
+    }
+    const PDCode code = canonical_output_code(raw_code);
+    const Diagram diagram(code);
+    const DualGraph graph(diagram);
+    const std::vector<int> face_colors = checkerboard_face_colors(graph);
+    std::vector<int> signatures;
+    signatures.push_back(goeritz_signature_for_color(diagram, graph, face_colors, 0));
+    signatures.push_back(goeritz_signature_for_color(diagram, graph, face_colors, 1));
+    std::sort(signatures.begin(), signatures.end());
+    return signatures;
+}
+
+std::vector<int> alexander_roots_mod_prime(
+    const PDCode& raw_code,
+    int modulus,
+    const SimplifierOptions* options) {
+    if (raw_code.empty()) {
+        return {};
+    }
+
+    const PDCode code = canonical_output_code(raw_code);
+    const Diagram diagram(code);
+    std::map<int, int> label_to_index;
+    for (int crossing = 0; crossing < static_cast<int>(code.size()); ++crossing) {
+        for (int strand = 0; strand < 4; ++strand) {
+            const int label = diagram.label_at(crossing, strand);
+            if (label_to_index.count(label) == 0) {
+                const int next = static_cast<int>(label_to_index.size());
+                label_to_index[label] = next;
+            }
+        }
+    }
+
+    DisjointSet dsu;
+    for (const auto& item : label_to_index) {
+        dsu.find(item.second);
+    }
+    for (int crossing = 0; crossing < static_cast<int>(code.size()); ++crossing) {
+        dsu.unite(label_to_index.at(diagram.label_at(crossing, 1)),
+                  label_to_index.at(diagram.label_at(crossing, 3)));
+    }
+
+    std::map<int, int> root_to_class;
+    for (const auto& item : label_to_index) {
+        const int root = dsu.find(item.second);
+        if (root_to_class.count(root) == 0) {
+            const int next = static_cast<int>(root_to_class.size());
+            root_to_class[root] = next;
+        }
+    }
+
+    const int rows = static_cast<int>(code.size());
+    const int columns = static_cast<int>(root_to_class.size());
+    if (rows <= 1 || columns <= 1) {
+        return {};
+    }
+    const int minor_size = std::min(rows, columns) - 1;
+
+    struct RowSpec {
+        int under_in = 0;
+        int over = 0;
+        int under_out = 0;
+        int sign = 1;
+    };
+    std::vector<RowSpec> row_specs;
+    row_specs.reserve(static_cast<std::size_t>(minor_size));
+    for (int row = 0; row < minor_size; ++row) {
+        RowSpec spec;
+        spec.under_in = root_to_class.at(dsu.find(label_to_index.at(diagram.label_at(row, 0))));
+        spec.over = root_to_class.at(dsu.find(label_to_index.at(diagram.label_at(row, 1))));
+        spec.under_out = root_to_class.at(dsu.find(label_to_index.at(diagram.label_at(row, 2))));
+        spec.sign = diagram.crossings[static_cast<std::size_t>(row)].sign;
+        row_specs.push_back(spec);
+    }
+
+    std::vector<int> roots;
+    for (int t = 1; t < modulus; ++t) {
+        if (options != nullptr) {
+            check_timeout(*options);
+        }
+        std::vector<std::vector<int>> minor(
+            static_cast<std::size_t>(minor_size),
+            std::vector<int>(static_cast<std::size_t>(minor_size), 0));
+        for (int row = 0; row < minor_size; ++row) {
+            const RowSpec& spec = row_specs[static_cast<std::size_t>(row)];
+            const int one_minus_t = positive_mod(1 - t, modulus);
+            auto add_value = [&](int column, int value) {
+                if (column >= minor_size) {
+                    return;
+                }
+                int& entry =
+                    minor[static_cast<std::size_t>(row)][static_cast<std::size_t>(column)];
+                entry = positive_mod(entry + value, modulus);
+            };
+            if (spec.sign == 1) {
+                add_value(spec.over, one_minus_t);
+                add_value(spec.under_in, t);
+                add_value(spec.under_out, -1);
+            } else {
+                add_value(spec.over, one_minus_t);
+                add_value(spec.under_in, -1);
+                add_value(spec.under_out, t);
+            }
+        }
+        if (alexander_determinant_guard::determinant_mod_prime(std::move(minor), modulus) == 0) {
+            roots.push_back(t);
+        }
+    }
+    return roots;
+}
+
+ReaprInvariantProfile profile_for_code(
+    const PDCode& code,
+    std::size_t crossingless_components,
+    const SimplifierOptions* options,
+    bool include_alexander_roots) {
+    ReaprInvariantProfile profile;
+    profile.components = analyze_components(code, crossingless_components).total_components();
+    profile.determinant_fingerprint =
+        alexander_determinant_guard::alexander_determinant_fingerprint(code);
+    profile.goeritz_signature_pair = goeritz_signature_pair(code);
+    if (include_alexander_roots) {
+        profile.alexander_roots_evaluated = true;
+        profile.alexander_roots_mod_11 = alexander_roots_mod_prime(code, 11, options);
+        profile.alexander_roots_mod_19 = alexander_roots_mod_prime(code, 19, options);
+        profile.alexander_roots_mod_31 = alexander_roots_mod_prime(code, 31, options);
+    }
+    return profile;
+}
+
+std::string profile_string(const ReaprInvariantProfile& profile) {
+    std::ostringstream out;
+    out << "components=" << profile.components
+        << "; determinant="
+        << alexander_determinant_guard::determinant_fingerprint_string(
+               profile.determinant_fingerprint)
+        << "; goeritz_signature_pair=" << int_vector_string(profile.goeritz_signature_pair);
+    if (profile.alexander_roots_evaluated) {
+        out << "; alexander_roots_mod_11=" << int_vector_string(profile.alexander_roots_mod_11)
+            << "; alexander_roots_mod_19=" << int_vector_string(profile.alexander_roots_mod_19)
+            << "; alexander_roots_mod_31=" << int_vector_string(profile.alexander_roots_mod_31);
+    } else {
+        out << "; alexander_roots_mod_11=not_evaluated"
+            << "; alexander_roots_mod_19=not_evaluated"
+            << "; alexander_roots_mod_31=not_evaluated";
+    }
+    return out.str();
+}
+
+}  // namespace reapr_invariant_guard
+
 PDCode torus_2_odd_pd_code(int crossings) {
     PDCode code;
     if (crossings <= 0 || crossings % 2 == 0) {
@@ -2750,14 +3175,163 @@ PDCode torus_2_odd_pd_code(int crossings) {
     return canonical_output_code(code);
 }
 
+std::uint64_t splitmix64_next(std::uint64_t& state) {
+    state += 0x9E3779B97F4A7C15ULL;
+    std::uint64_t value = state;
+    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    value = (value ^ (value >> 27)) * 0x94D049BB133111EBULL;
+    return value ^ (value >> 31);
+}
+
+int deterministic_random_int(std::uint64_t& state, int low, int high) {
+    if (high <= low) {
+        return low;
+    }
+    const std::uint64_t span = static_cast<std::uint64_t>(high - low + 1);
+    return low + static_cast<int>(splitmix64_next(state) % span);
+}
+
+std::uint64_t reapr_seed_for_attempt(int attempt, int determinant, int crossings) {
+    std::uint64_t state = 0xD6E8FEB86659FD93ULL;
+    state ^= static_cast<std::uint64_t>(attempt + 1) * 0x9E3779B97F4A7C15ULL;
+    state ^= static_cast<std::uint64_t>(std::max(0, determinant)) * 0xBF58476D1CE4E5B9ULL;
+    state ^= static_cast<std::uint64_t>(std::max(0, crossings)) * 0x94D049BB133111EBULL;
+    return splitmix64_next(state);
+}
+
+PDCode closed_braid_pd_code(int strands, const std::vector<int>& word) {
+    if (strands < 2 || word.empty()) {
+        return {};
+    }
+
+    std::vector<int> current(static_cast<std::size_t>(strands));
+    std::iota(current.begin(), current.end(), 0);
+    int next_label = strands;
+    PDCode code;
+    code.reserve(word.size());
+
+    for (int generator : word) {
+        const int position = std::abs(generator) - 1;
+        if (position < 0 || position + 1 >= strands) {
+            return {};
+        }
+        const int top_left = current[static_cast<std::size_t>(position)];
+        const int top_right = current[static_cast<std::size_t>(position + 1)];
+        const int bottom_left = next_label++;
+        const int bottom_right = next_label++;
+        if (generator > 0) {
+            code.push_back(Crossing{top_right, bottom_right, bottom_left, top_left});
+        } else {
+            code.push_back(Crossing{top_right, top_left, bottom_left, bottom_right});
+        }
+        current[static_cast<std::size_t>(position)] = bottom_left;
+        current[static_cast<std::size_t>(position + 1)] = bottom_right;
+    }
+
+    for (Crossing& crossing : code) {
+        for (int& label : crossing) {
+            if (0 <= label && label < strands) {
+                label = current[static_cast<std::size_t>(label)];
+            }
+        }
+    }
+
+    try {
+        return canonical_output_code(code);
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+
+std::vector<PDCode> reapr_candidate_codes_for_attempt(
+    int determinant,
+    int original_crossings,
+    int attempt) {
+    std::vector<PDCode> candidates;
+    std::set<std::string> seen;
+    const int maximum_candidate_crossings =
+        std::max(0, std::min(original_crossings - 1, 96));
+
+    auto append_candidate = [&](const PDCode& candidate, bool allow_empty) {
+        if (candidate.empty()) {
+            if (allow_empty && seen.insert("PD[]").second) {
+                candidates.push_back(candidate);
+            }
+            return;
+        }
+        if (static_cast<int>(candidate.size()) >= original_crossings) {
+            return;
+        }
+        const std::string key = format_final_pd_code(candidate);
+        if (seen.insert(key).second) {
+            candidates.push_back(candidate);
+        }
+    };
+
+    if (attempt == 0) {
+        if (determinant == 1) {
+            append_candidate(PDCode{}, true);
+        } else if (determinant > 1 &&
+                   (determinant % 2) != 0 &&
+                   determinant < original_crossings) {
+            append_candidate(torus_2_odd_pd_code(determinant), false);
+        }
+        return candidates;
+    }
+
+    if (maximum_candidate_crossings < 3) {
+        return candidates;
+    }
+
+    std::uint64_t state = reapr_seed_for_attempt(attempt, determinant, original_crossings);
+
+    if (determinant > 1 &&
+        (determinant % 2) != 0 &&
+        determinant <= maximum_candidate_crossings) {
+        std::vector<int> mirror_word(static_cast<std::size_t>(determinant), -1);
+        append_candidate(closed_braid_pd_code(2, mirror_word), false);
+    }
+
+    const int candidate_count = 12;
+    for (int candidate_index = 0; candidate_index < candidate_count; ++candidate_index) {
+        const int strands = deterministic_random_int(state, 3, 7);
+        int minimum_length = 3;
+        if (determinant > 1 && determinant < maximum_candidate_crossings) {
+            minimum_length = std::max(3, std::min(maximum_candidate_crossings, determinant - 4));
+        }
+        const int length = deterministic_random_int(state, minimum_length, maximum_candidate_crossings);
+        std::vector<int> word;
+        word.reserve(static_cast<std::size_t>(length));
+        int previous = 0;
+        for (int index = 0; index < length; ++index) {
+            int generator = deterministic_random_int(state, 1, strands - 1);
+            int sign = deterministic_random_int(state, 0, 99) < 40 ? -1 : 1;
+            if (previous != 0 &&
+                generator == std::abs(previous) &&
+                sign == (previous > 0 ? -1 : 1)) {
+                sign *= -1;
+            }
+            const int signed_generator = sign * generator;
+            word.push_back(signed_generator);
+            previous = signed_generator;
+        }
+        append_candidate(closed_braid_pd_code(strands, word), false);
+    }
+
+    return candidates;
+}
+
 struct ReaprOracleResult {
     bool accepted = false;
     bool rejected = false;
+    int attempts = 0;
     PDCode code;
     std::size_t crossingless_components = 0;
     std::string status;
     std::string determinant_before;
     std::string determinant_after;
+    std::string invariants_before;
+    std::string invariants_after;
 };
 
 std::size_t crossingless_components_for_candidate(
@@ -2801,39 +3375,118 @@ ReaprOracleResult try_reapr_oracle(
         return result;
     }
 
-    PDCode candidate;
-    if (determinant == 1) {
-        candidate = {};
-    } else if (determinant > 1 &&
-               (determinant % 2) != 0 &&
-               determinant < static_cast<int>(code.size())) {
-        candidate = torus_2_odd_pd_code(determinant);
+    if (options.reapr_retry_max == 0) {
+        result.status = "skipped_reapr_retry_max_zero";
+        return result;
+    }
+
+    bool saw_candidate = false;
+    bool saw_rejected_candidate = false;
+    reapr_invariant_guard::ReaprInvariantProfile before_basic_profile;
+    reapr_invariant_guard::ReaprInvariantProfile before_full_profile;
+    bool have_before_basic_profile = false;
+    bool have_before_full_profile = false;
+
+    for (int attempt = 0; attempt < options.reapr_retry_max; ++attempt) {
+        check_timeout(options);
+        result.attempts = attempt + 1;
+        const std::vector<PDCode> candidates =
+            reapr_candidate_codes_for_attempt(
+                determinant, static_cast<int>(code.size()), attempt);
+        {
+            std::ostringstream message;
+            message << "reapr_attempt_start attempt=" << (attempt + 1)
+                    << " retry_max=" << options.reapr_retry_max
+                    << " candidates=" << candidates.size();
+            emit_progress(options, message.str());
+        }
+
+        for (std::size_t candidate_index = 0; candidate_index < candidates.size(); ++candidate_index) {
+            check_timeout(options);
+            const PDCode& candidate = candidates[candidate_index];
+            if (candidate.size() >= code.size()) {
+                continue;
+            }
+            saw_candidate = true;
+
+            const std::size_t candidate_crossingless_components =
+                crossingless_components_for_candidate(code, crossingless_components, candidate);
+            if (!have_before_basic_profile) {
+                before_basic_profile = reapr_invariant_guard::profile_for_code(
+                    code, crossingless_components, &options, false);
+                have_before_basic_profile = true;
+                result.determinant_before =
+                    alexander_determinant_guard::determinant_fingerprint_string(
+                        before_basic_profile.determinant_fingerprint);
+                result.invariants_before =
+                    reapr_invariant_guard::profile_string(before_basic_profile);
+            }
+
+            reapr_invariant_guard::ReaprInvariantProfile after_profile =
+                reapr_invariant_guard::profile_for_code(
+                    candidate, candidate_crossingless_components, &options, false);
+            result.determinant_after =
+                alexander_determinant_guard::determinant_fingerprint_string(
+                    after_profile.determinant_fingerprint);
+            result.invariants_after = reapr_invariant_guard::profile_string(after_profile);
+            if (!reapr_invariant_guard::same_basic_profile(before_basic_profile, after_profile)) {
+                saw_rejected_candidate = true;
+                result.rejected = true;
+                std::ostringstream message;
+                message << "reapr_attempt_rejected attempt=" << (attempt + 1)
+                        << " candidate=" << candidate_index
+                        << " reason=basic_invariant_changed"
+                        << " crossings=" << candidate.size();
+                emit_progress(options, message.str());
+                continue;
+            }
+
+            if (!have_before_full_profile) {
+                before_full_profile = reapr_invariant_guard::profile_for_code(
+                    code, crossingless_components, &options, true);
+                have_before_full_profile = true;
+                result.invariants_before =
+                    reapr_invariant_guard::profile_string(before_full_profile);
+            }
+            after_profile = reapr_invariant_guard::profile_for_code(
+                candidate, candidate_crossingless_components, &options, true);
+            result.invariants_after = reapr_invariant_guard::profile_string(after_profile);
+            if (!reapr_invariant_guard::same_profile(before_full_profile, after_profile)) {
+                saw_rejected_candidate = true;
+                result.rejected = true;
+                std::ostringstream message;
+                message << "reapr_attempt_rejected attempt=" << (attempt + 1)
+                        << " candidate=" << candidate_index
+                        << " reason=full_invariant_changed"
+                        << " crossings=" << candidate.size();
+                emit_progress(options, message.str());
+                continue;
+            }
+
+            result.accepted = true;
+            result.status = candidate.empty()
+                ? "accepted_empty_projection"
+                : (attempt == 0 ? "accepted_projection_template" : "accepted_retry_projection");
+            result.code = candidate;
+            result.crossingless_components = candidate_crossingless_components;
+            {
+                std::ostringstream message;
+                message << "reapr_attempt_accepted attempt=" << (attempt + 1)
+                        << " candidate=" << candidate_index
+                        << " crossings=" << candidate.size();
+                emit_progress(options, message.str());
+            }
+            return result;
+        }
+    }
+
+    if (saw_rejected_candidate) {
+        result.status = "rejected_invariant_changed";
+    } else if (saw_candidate) {
+        result.status = "rejected_no_matching_profile";
     } else {
         result.status = "skipped_no_smaller_projection_template";
-        return result;
     }
-
-    check_timeout(options);
-    candidate = canonical_output_code(candidate);
-    if (candidate.size() >= code.size()) {
-        result.status = "rejected_candidate_not_smaller";
-        return result;
-    }
-
-    const auto after = alexander_determinant_guard::alexander_determinant_fingerprint(candidate);
-    result.determinant_after = alexander_determinant_guard::determinant_fingerprint_string(after);
-    if (after != before) {
-        result.status = "rejected_determinant_changed";
-        result.rejected = true;
-        return result;
-    }
-
-    result.accepted = true;
-    result.status =
-        candidate.empty() ? "accepted_empty_projection" : "accepted_torus_projection";
-    result.code = std::move(candidate);
-    result.crossingless_components =
-        crossingless_components_for_candidate(code, crossingless_components, result.code);
     return result;
 }
 
@@ -4285,7 +4938,8 @@ inline ReductionResult reduce_pd_code(
                     << " bruteforce_budget=" << run_options.bruteforce_budget
                     << " timeout=" << run_options.timeout_seconds
                     << " heuristic=" << (run_options.ban_heuristic ? "off" : "on")
-                    << " reapr=" << (run_options.enable_reapr ? "on" : "off");
+                    << " reapr=" << (run_options.enable_reapr ? "on" : "off")
+                    << " reapr_retry_max=" << run_options.reapr_retry_max;
             emit_progress(run_options, message.str());
         }
 
@@ -4324,8 +4978,11 @@ inline ReductionResult reduce_pd_code(
                 try_reapr_oracle(output.code, output.crossingless_components, run_options);
             output.alexander_determinant_before = reapr.determinant_before;
             output.alexander_determinant_after = reapr.determinant_after;
+            output.reapr_invariants_before = reapr.invariants_before;
+            output.reapr_invariants_after = reapr.invariants_after;
             output.reapr_status = reapr.status;
             output.reapr_rejected = reapr.rejected;
+            output.reapr_attempts = reapr.attempts;
             if (reapr.accepted) {
                 output.reapr_used = true;
                 output.reapr_rounds += 1;
@@ -4348,10 +5005,13 @@ inline ReductionResult reduce_pd_code(
                 std::ostringstream message;
                 message << "reapr_oracle_done status=" << output.reapr_status
                         << " accepted=" << (output.reapr_used ? "yes" : "no")
+                        << " attempts=" << output.reapr_attempts
                         << " input_crossings=" << before_reapr_crossings
                         << " output_crossings=" << output.code.size()
                         << " determinant_before=" << output.alexander_determinant_before
-                        << " determinant_after=" << output.alexander_determinant_after;
+                        << " determinant_after=" << output.alexander_determinant_after
+                        << " invariants_before=\"" << output.reapr_invariants_before
+                        << "\" invariants_after=\"" << output.reapr_invariants_after << "\"";
                 emit_progress(run_options, message.str());
             }
         }

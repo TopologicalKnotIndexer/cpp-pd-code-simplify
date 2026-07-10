@@ -172,6 +172,7 @@ std::string result_to_json(
     out << "\"last_path_search_mode\":\"" << json_escape(result.last_path_search_mode) << "\",";
     out << "\"reapr_used\":" << (result.reapr_used ? "true" : "false") << ",";
     out << "\"reapr_rounds\":" << result.reapr_rounds << ",";
+    out << "\"reapr_attempts\":" << result.reapr_attempts << ",";
     out << "\"reapr_rejected\":" << (result.reapr_rejected ? "true" : "false") << ",";
     out << "\"reapr_status\":\"" << json_escape(result.reapr_status) << "\",";
     out << "\"reapr_warning\":\"" << json_escape(result.reapr_warning) << "\",";
@@ -179,6 +180,10 @@ std::string result_to_json(
         << json_escape(result.alexander_determinant_before) << "\",";
     out << "\"alexander_determinant_after\":\""
         << json_escape(result.alexander_determinant_after) << "\",";
+    out << "\"reapr_invariants_before\":\""
+        << json_escape(result.reapr_invariants_before) << "\",";
+    out << "\"reapr_invariants_after\":\""
+        << json_escape(result.reapr_invariants_after) << "\",";
     out << "\"stopped_by_round_limit\":"
         << (result.stopped_by_round_limit ? "true" : "false") << ",";
     out << "\"timed_out\":" << (result.timed_out ? "true" : "false") << ",";
@@ -214,6 +219,7 @@ char* pdcode_simplify_run_json(
     int verbose,
     int show_step_pd,
     int enable_reapr,
+    int reapr_retry_max,
     unsigned long long known_crossingless_components,
     const int* removed_crossings,
     unsigned long long removed_crossing_count,
@@ -249,6 +255,7 @@ char* pdcode_simplify_run_json(
         options.max_threads = max_thread;
         options.bruteforce_budget = bruteforce_budget;
         options.timeout_seconds = timeout_seconds;
+        options.reapr_retry_max = reapr_retry_max;
         options.ban_heuristic = ban_heuristic != 0;
         options.enable_reapr = enable_reapr != 0;
         options.verbose = verbose != 0;

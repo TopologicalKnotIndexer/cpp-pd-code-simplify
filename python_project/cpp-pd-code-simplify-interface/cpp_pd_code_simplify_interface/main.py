@@ -881,6 +881,7 @@ def _load_library() -> ctypes.CDLL:
         ctypes.c_int,
         ctypes.c_int,
         ctypes.c_int,
+        ctypes.c_int,
         ctypes.c_ulonglong,
         ctypes.POINTER(ctypes.c_int),
         ctypes.c_ulonglong,
@@ -906,6 +907,7 @@ def _run_one_direct(
     verbose: bool = False,
     show_step_pd: bool = False,
     reapr: bool = False,
+    reapr_retry_max: int = 3,
     known_crossingless_components: int = 0,
     remove_crossings: Optional[Sequence[int]] = None,
     log_file: Optional[Union[str, os.PathLike[str]]] = None,
@@ -918,6 +920,8 @@ def _run_one_direct(
         raise ValueError("bruteforce_budget must be -1 or a positive integer")
     if timeout < -1 or timeout == 0:
         raise ValueError("timeout must be -1 or a positive integer")
+    if reapr_retry_max < 0:
+        raise ValueError("reapr_retry_max must be a non-negative integer")
     library = _load_library()
     removed_count = 0 if remove_crossings is None else len(remove_crossings)
     removed_array = None
@@ -936,6 +940,7 @@ def _run_one_direct(
         1 if verbose else 0,
         1 if show_step_pd else 0,
         1 if reapr else 0,
+        int(reapr_retry_max),
         int(known_crossingless_components),
         removed_array,
         int(removed_count),
@@ -980,6 +985,7 @@ def _run_one(
     verbose: bool = False,
     show_step_pd: bool = False,
     reapr: bool = False,
+    reapr_retry_max: int = 3,
     known_crossingless_components: int = 0,
     remove_crossings: Optional[Sequence[int]] = None,
     log_file: Optional[Union[str, os.PathLike[str]]] = None,
@@ -992,6 +998,8 @@ def _run_one(
         raise ValueError("bruteforce_budget must be -1 or a positive integer")
     if timeout < -1 or timeout == 0:
         raise ValueError("timeout must be -1 or a positive integer")
+    if reapr_retry_max < 0:
+        raise ValueError("reapr_retry_max must be a non-negative integer")
 
     request = {
         "pd_text": pd_text,
@@ -1004,6 +1012,7 @@ def _run_one(
         "verbose": bool(verbose),
         "show_step_pd": bool(show_step_pd),
         "reapr": bool(reapr),
+        "reapr_retry_max": int(reapr_retry_max),
         "known_crossingless_components": int(known_crossingless_components),
         "remove_crossings": [int(value) for value in remove_crossings or []],
     }
@@ -1088,6 +1097,7 @@ def simplify(
     verbose: bool = False,
     show_step_pd: bool = False,
     reapr: bool = False,
+    reapr_retry_max: int = 3,
     known_crossingless_components: int = 0,
     remove_crossings: Optional[Sequence[int]] = None,
     log_file: Optional[Union[str, os.PathLike[str]]] = None,
@@ -1107,6 +1117,7 @@ def simplify(
             verbose=verbose,
             show_step_pd=show_step_pd,
             reapr=reapr,
+            reapr_retry_max=reapr_retry_max,
             known_crossingless_components=known_crossingless_components,
             remove_crossings=remove_crossings,
             log_file=log_file,
@@ -1125,6 +1136,7 @@ def simplify_many(
     verbose: bool = False,
     show_step_pd: bool = False,
     reapr: bool = False,
+    reapr_retry_max: int = 3,
     known_crossingless_components: int = 0,
     remove_crossings: Optional[Sequence[int]] = None,
     log_file: Optional[Union[str, os.PathLike[str]]] = None,
@@ -1145,6 +1157,7 @@ def simplify_many(
                 verbose=verbose,
                 show_step_pd=show_step_pd,
                 reapr=reapr,
+                reapr_retry_max=reapr_retry_max,
                 known_crossingless_components=known_crossingless_components,
                 remove_crossings=remove_crossings,
                 log_file=log_file,
@@ -1180,8 +1193,9 @@ def _main_impl(argv: Sequence[str]) -> int:
     parser.add_argument(
         "--reapr",
         action="store_true",
-        help="enable the experimental determinant-guarded projection oracle",
+        help="enable the experimental invariant-guarded projection oracle",
     )
+    parser.add_argument("--reapr-retry-max", type=int, default=3)
     parser.add_argument("--log-file", help="tee stdout and stderr output into this flushed log file")
     parser.add_argument("--known-crossingless-components", type=int, default=0)
     parser.add_argument("--remove-crossings", help="comma-separated zero-based crossing indices")
@@ -1194,6 +1208,8 @@ def _main_impl(argv: Sequence[str]) -> int:
         parser.error("--bruteforce-budget must be -1 or a positive integer")
     if args.timeout < -1 or args.timeout == 0:
         parser.error("--timeout must be -1 or a positive integer")
+    if args.reapr_retry_max < 0:
+        parser.error("--reapr-retry-max must be a non-negative integer")
     if args.pd_code and args.pd_code_option:
         parser.error("pass either a positional PD code or --pd-code, not both")
     pd_code_text = args.pd_code_option or args.pd_code
@@ -1230,6 +1246,7 @@ def _main_impl(argv: Sequence[str]) -> int:
                     verbose=args.verbose,
                     show_step_pd=args.show_step_pd,
                     reapr=args.reapr,
+                    reapr_retry_max=args.reapr_retry_max,
                     known_crossingless_components=args.known_crossingless_components,
                     remove_crossings=remove_crossings,
                     log_file=args.log_file,
@@ -1267,6 +1284,7 @@ def _main_impl(argv: Sequence[str]) -> int:
                 verbose=args.verbose,
                 show_step_pd=args.show_step_pd,
                 reapr=args.reapr,
+                reapr_retry_max=args.reapr_retry_max,
                 known_crossingless_components=args.known_crossingless_components,
                 remove_crossings=remove_crossings,
                 log_file=args.log_file,

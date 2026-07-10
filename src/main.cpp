@@ -154,7 +154,8 @@ void print_help(const char* program) {
         << "Use --ban-heuristic to force brute-force green-path enumeration.\n"
         << "Use --max-thread N to cap brute-force worker threads; -1 means auto.\n"
         << "Use --bruteforce-budget N to cap brute-force green-path checks; -1 means no cap.\n"
-        << "Use --reapr to enable the experimental determinant-guarded projection oracle.\n"
+        << "Use --reapr to enable the experimental invariant-guarded projection oracle.\n"
+        << "Use --reapr-retry-max N to cap deterministic REAPR retry attempts; default is 3.\n"
         << "Use --timeout K to cap each PD-code job in seconds; -1 means no timeout.\n"
         << "Use --verbose to print progress logs to stderr.\n"
         << "Use --show-step-pd to print the canonical PD code after each witness application.\n"
@@ -451,6 +452,7 @@ void print_text_result(
     std::cout << "last_path_search_mode: " << result.last_path_search_mode << '\n';
     std::cout << "reapr_used: " << (result.reapr_used ? "yes" : "no") << '\n';
     std::cout << "reapr_rounds: " << result.reapr_rounds << '\n';
+    std::cout << "reapr_attempts: " << result.reapr_attempts << '\n';
     std::cout << "reapr_rejected: " << (result.reapr_rejected ? "yes" : "no") << '\n';
     std::cout << "reapr_status: " << result.reapr_status << '\n';
     if (!result.reapr_warning.empty()) {
@@ -460,6 +462,10 @@ void print_text_result(
               << result.alexander_determinant_before << '\n';
     std::cout << "alexander_determinant_after: "
               << result.alexander_determinant_after << '\n';
+    std::cout << "reapr_invariants_before: "
+              << result.reapr_invariants_before << '\n';
+    std::cout << "reapr_invariants_after: "
+              << result.reapr_invariants_after << '\n';
     std::cout << "stopped_by_round_limit: "
               << (result.stopped_by_round_limit ? "yes" : "no") << '\n';
     std::cout << "timed_out: " << (result.timed_out ? "yes" : "no") << '\n';
@@ -545,6 +551,7 @@ void print_json_result(
     std::cout << "  \"reapr_used\": "
               << (result.reapr_used ? "true" : "false") << ",\n";
     std::cout << "  \"reapr_rounds\": " << result.reapr_rounds << ",\n";
+    std::cout << "  \"reapr_attempts\": " << result.reapr_attempts << ",\n";
     std::cout << "  \"reapr_rejected\": "
               << (result.reapr_rejected ? "true" : "false") << ",\n";
     std::cout << "  \"reapr_status\": \""
@@ -555,6 +562,10 @@ void print_json_result(
               << json_escape(result.alexander_determinant_before) << "\",\n";
     std::cout << "  \"alexander_determinant_after\": \""
               << json_escape(result.alexander_determinant_after) << "\",\n";
+    std::cout << "  \"reapr_invariants_before\": \""
+              << json_escape(result.reapr_invariants_before) << "\",\n";
+    std::cout << "  \"reapr_invariants_after\": \""
+              << json_escape(result.reapr_invariants_after) << "\",\n";
     std::cout << "  \"stopped_by_round_limit\": "
               << (result.stopped_by_round_limit ? "true" : "false") << ",\n";
     std::cout << "  \"timed_out\": "
@@ -628,6 +639,14 @@ int main(int argc, char** argv) {
                 options.ban_heuristic = true;
             } else if (arg == "--reapr") {
                 options.enable_reapr = true;
+            } else if (arg == "--reapr-retry-max") {
+                if (i + 1 >= argc) {
+                    throw std::invalid_argument("--reapr-retry-max requires a value");
+                }
+                options.reapr_retry_max = std::stoi(argv[++i]);
+                if (options.reapr_retry_max < 0) {
+                    throw std::invalid_argument("--reapr-retry-max must be a non-negative integer");
+                }
             } else if (arg == "--verbose") {
                 options.verbose = true;
             } else if (arg == "--log-file") {

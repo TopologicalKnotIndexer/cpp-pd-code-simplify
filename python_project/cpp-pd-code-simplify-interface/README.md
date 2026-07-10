@@ -68,8 +68,10 @@ the C++ backend for that phase. The backend call runs in a helper process, so
 `log_file=PATH`, or CLI flag `--log-file PATH`, to tee stdout and stderr into a
 flushed backup log file.
 Use `reapr=True`, or CLI flag `--reapr`, only for the experimental
-determinant-guarded projection oracle. It can change the knot or link type;
-accepted output includes `reapr_warning` and determinant guard fields.
+invariant-guarded projection oracle. It can change the knot or link type;
+accepted output includes `reapr_warning`, determinant guard fields, and
+before/after invariant profile strings. Use `reapr_retry_max=N`, or CLI flag
+`--reapr-retry-max N`, to control the deterministic retry cap.
 Use `show_step_pd=True`, or CLI flag `--show-step-pd`, to print
 `step_pd_code[ROUND]: PD[...]` to stdout after each mid-simplification witness
 is applied and canonicalized, before that round's automatic local cleanup.

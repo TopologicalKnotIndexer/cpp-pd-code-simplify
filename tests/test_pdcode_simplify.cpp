@@ -393,7 +393,7 @@ void test_step_pd_callback() {
             "step callback should receive a canonical PD code after witness application");
 }
 
-void test_reapr_pd_k0_fixture_reduces() {
+void test_reapr_pd_k0_fixture_rejects_unsafe_projection() {
     const auto code = pdcode_simplify::parse_pd_code(
         read_text_file("tests/fixtures/pd_k0.txt"));
     require(code.size() == 481,
@@ -404,14 +404,24 @@ void test_reapr_pd_k0_fixture_reduces() {
     options.max_threads = 1;
     const auto reduced = pdcode_simplify::reduce_pd_code(code, 0, options, 0);
 
-    require(reduced.reapr_used,
-            "pd_k0 regression fixture should accept the experimental REAPR oracle");
-    require(reduced.code.size() < code.size(),
-            "experimental REAPR oracle should reduce the pd_k0 crossing count");
+    require(!reduced.reapr_used,
+            "strict REAPR guards should not accept the unsafe pd_k0 projection template");
+    require(reduced.reapr_attempts == 3,
+            "strict REAPR guard should use the default three deterministic attempts");
+    require(reduced.reapr_rejected,
+            "strict REAPR guards should report the unsafe pd_k0 candidate as rejected");
+    require(reduced.reapr_status == "rejected_invariant_changed",
+            "strict REAPR guards should reject pd_k0 because an invariant changed");
+    require(reduced.code.size() == code.size(),
+            "rejected REAPR candidates should keep the current best PD code");
     require(!reduced.alexander_determinant_before.empty(),
             "REAPR oracle should report the determinant guard before value");
-    require(reduced.alexander_determinant_before == reduced.alexander_determinant_after,
-            "REAPR oracle should accept only determinant-preserving candidates");
+    require(!reduced.alexander_determinant_after.empty(),
+            "REAPR oracle should report the determinant guard after value for a rejected candidate");
+    require(!reduced.reapr_invariants_before.empty() && !reduced.reapr_invariants_after.empty(),
+            "strict REAPR guards should report before/after invariant profiles");
+    require(reduced.reapr_invariants_before != reduced.reapr_invariants_after,
+            "pd_k0 unsafe candidate should have a different invariant profile");
 }
 
 }  // namespace
@@ -435,7 +445,7 @@ int main() {
         test_canonicalize_after_each_reduction();
         test_do_check_cycle_respects_timeout();
         test_step_pd_callback();
-        test_reapr_pd_k0_fixture_reduces();
+        test_reapr_pd_k0_fixture_rejects_unsafe_projection();
         std::cout << "All tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

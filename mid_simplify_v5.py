@@ -132,7 +132,8 @@ class PdCodeSimplifyTimeoutError(RuntimeError):
 DEFAULT_BRUTEFORCE_BUDGET = 200_000
 REAPR_WARNING = (
     "WARNING: --reapr uses a deterministic internal reembedding/projection oracle "
-    "guarded only by the Alexander determinant. The resulting PD code may represent "
+    "guarded by component count, Alexander determinant, Goeritz signature, and "
+    "finite-field Alexander root checks. The resulting PD code may still represent "
     "a different knot or link; verify additional invariants independently."
 )
 _ALEXANDER_FINGERPRINT_PRIMES = (1_000_003, 1_000_033, 1_000_037)
@@ -315,10 +316,13 @@ class ReductionResult:
     reapr_used: bool = False
     reapr_rejected: bool = False
     reapr_rounds: int = 0
+    reapr_attempts: int = 0
     reapr_status: str = ""
     reapr_warning: str = ""
     alexander_determinant_before: str = ""
     alexander_determinant_after: str = ""
+    reapr_invariants_before: str = ""
+    reapr_invariants_after: str = ""
     stopped_by_round_limit: bool = False
     timed_out: bool = False
     resource_limited: bool = False
@@ -364,11 +368,14 @@ class ReductionResult:
             "last_path_search_mode": self.last_path_search_mode,
             "reapr_used": self.reapr_used,
             "reapr_rounds": self.reapr_rounds,
+            "reapr_attempts": self.reapr_attempts,
             "reapr_rejected": self.reapr_rejected,
             "reapr_status": self.reapr_status,
             "reapr_warning": self.reapr_warning,
             "alexander_determinant_before": self.alexander_determinant_before,
             "alexander_determinant_after": self.alexander_determinant_after,
+            "reapr_invariants_before": self.reapr_invariants_before,
+            "reapr_invariants_after": self.reapr_invariants_after,
             "stopped_by_round_limit": self.stopped_by_round_limit,
             "timed_out": self.timed_out,
             "resource_limited": self.resource_limited,
@@ -3507,6 +3514,329 @@ def _single_small_determinant_value(fingerprint: Sequence[int]) -> int:
     return first if all(value == first for value in fingerprint) else -1
 
 
+@dataclass
+class ReaprInvariantProfile:
+    components: int = 0
+    determinant_fingerprint: Tuple[int, ...] = ()
+    goeritz_signature_pair: Tuple[int, ...] = ()
+    alexander_roots_evaluated: bool = False
+    alexander_roots_mod_11: Tuple[int, ...] = ()
+    alexander_roots_mod_19: Tuple[int, ...] = ()
+    alexander_roots_mod_31: Tuple[int, ...] = ()
+
+
+def _int_vector_string(values: Sequence[int]) -> str:
+    return "[" + ",".join(str(value) for value in values) + "]"
+
+
+def _checkerboard_face_colors(graph: DualGraph) -> List[int]:
+    colors = [-1 for _ in graph.faces]
+    for start in range(len(colors)):
+        if colors[start] != -1:
+            continue
+        colors[start] = 0
+        frontier: Deque[int] = deque([start])
+        while frontier:
+            face = frontier.popleft()
+            for edge_index in graph.adjacency[face]:
+                edge = graph.edges[edge_index]
+                neighbor = edge.v if edge.u == face else edge.u
+                expected = 1 - colors[face]
+                if colors[neighbor] == -1:
+                    colors[neighbor] = expected
+                    frontier.append(neighbor)
+    return colors
+
+
+def _swap_symmetric_rows_and_columns(matrix: List[List[float]], first: int, second: int) -> None:
+    if first == second:
+        return
+    matrix[first], matrix[second] = matrix[second], matrix[first]
+    for row in matrix:
+        row[first], row[second] = row[second], row[first]
+
+
+def _symmetric_matrix_signature(matrix: List[List[float]]) -> int:
+    eps = 1e-10
+    size = len(matrix)
+    positive = 0
+    negative = 0
+    index = 0
+    while index < size:
+        diagonal_pivot = -1
+        for candidate in range(index, size):
+            if abs(matrix[candidate][candidate]) > eps:
+                diagonal_pivot = candidate
+                break
+        if diagonal_pivot != -1:
+            _swap_symmetric_rows_and_columns(matrix, index, diagonal_pivot)
+            pivot = matrix[index][index]
+            if pivot > 0:
+                positive += 1
+            else:
+                negative += 1
+            for row in range(index + 1, size):
+                for column in range(row, size):
+                    matrix[row][column] -= matrix[row][index] * matrix[index][column] / pivot
+                    matrix[column][row] = matrix[row][column]
+            index += 1
+            continue
+
+        first = -1
+        second = -1
+        for row in range(index, size):
+            if first != -1:
+                break
+            for column in range(row + 1, size):
+                if abs(matrix[row][column]) > eps:
+                    first = row
+                    second = column
+                    break
+        if first == -1:
+            break
+        _swap_symmetric_rows_and_columns(matrix, index, first)
+        _swap_symmetric_rows_and_columns(matrix, index + 1, second)
+
+        a = matrix[index][index]
+        b = matrix[index][index + 1]
+        d = matrix[index + 1][index + 1]
+        determinant = a * d - b * b
+        if abs(determinant) <= eps:
+            break
+        if determinant < 0:
+            positive += 1
+            negative += 1
+        elif a + d > 0:
+            positive += 2
+        else:
+            negative += 2
+
+        inverse00 = d / determinant
+        inverse01 = -b / determinant
+        inverse11 = a / determinant
+        for row in range(index + 2, size):
+            vi0 = matrix[row][index]
+            vi1 = matrix[row][index + 1]
+            for column in range(row, size):
+                vj0 = matrix[index][column]
+                vj1 = matrix[index + 1][column]
+                correction = (
+                    vi0 * (inverse00 * vj0 + inverse01 * vj1)
+                    + vi1 * (inverse01 * vj0 + inverse11 * vj1)
+                )
+                matrix[row][column] -= correction
+                matrix[column][row] = matrix[row][column]
+        index += 2
+    return positive - negative
+
+
+def _goeritz_signature_for_color(
+    diagram: Diagram,
+    graph: DualGraph,
+    face_colors: Sequence[int],
+    selected_color: int,
+) -> int:
+    selected_faces = [
+        face for face, color in enumerate(face_colors) if color == selected_color
+    ]
+    if not selected_faces:
+        return 0
+    face_to_matrix = [-2 for _ in graph.faces]
+    for index, face in enumerate(selected_faces[1:]):
+        face_to_matrix[face] = index
+    matrix_size = len(selected_faces) - 1
+    matrix = [[0.0 for _ in range(matrix_size)] for _ in range(matrix_size)]
+    correction = 0
+
+    for crossing in range(len(diagram.code)):
+        faces = [
+            graph.edge_to_face[Endpoint(crossing, strand).key]
+            for strand in range(4)
+        ]
+        first_face = -1
+        second_face = -1
+        eta = 0
+        if face_colors[faces[0]] == selected_color and face_colors[faces[2]] == selected_color:
+            first_face = faces[0]
+            second_face = faces[2]
+            eta = diagram.signs[crossing]
+        elif face_colors[faces[1]] == selected_color and face_colors[faces[3]] == selected_color:
+            first_face = faces[1]
+            second_face = faces[3]
+            eta = -diagram.signs[crossing]
+        else:
+            continue
+
+        if eta == diagram.signs[crossing]:
+            correction += eta
+
+        if first_face == second_face:
+            continue
+        first_index = face_to_matrix[first_face]
+        second_index = face_to_matrix[second_face]
+        if first_index >= 0:
+            matrix[first_index][first_index] += eta
+        if second_index >= 0:
+            matrix[second_index][second_index] += eta
+        if first_index >= 0 and second_index >= 0:
+            matrix[first_index][second_index] -= eta
+            matrix[second_index][first_index] -= eta
+
+    return _symmetric_matrix_signature(matrix) - correction
+
+
+def _goeritz_signature_pair(raw_code: PDCode) -> Tuple[int, ...]:
+    if not raw_code:
+        return (0, 0)
+    code = _canonical_output_code(raw_code)
+    diagram = Diagram(code)
+    graph = DualGraph(diagram)
+    face_colors = _checkerboard_face_colors(graph)
+    signatures = [
+        _goeritz_signature_for_color(diagram, graph, face_colors, 0),
+        _goeritz_signature_for_color(diagram, graph, face_colors, 1),
+    ]
+    return tuple(sorted(signatures))
+
+
+def _alexander_roots_mod_prime(
+    raw_code: PDCode,
+    modulus: int,
+    timeout: int,
+    deadline: Optional[float],
+) -> Tuple[int, ...]:
+    if not raw_code:
+        return ()
+
+    code = _canonical_output_code(raw_code)
+    diagram = Diagram(code)
+    label_to_index: Dict[int, int] = {}
+    for crossing in range(len(code)):
+        for strand in range(4):
+            label = diagram.label_at(crossing, strand)
+            if label not in label_to_index:
+                label_to_index[label] = len(label_to_index)
+
+    dsu = DisjointSet()
+    for value in label_to_index.values():
+        dsu.find(value)
+    for crossing in range(len(code)):
+        dsu.union(
+            label_to_index[diagram.label_at(crossing, 1)],
+            label_to_index[diagram.label_at(crossing, 3)],
+        )
+
+    root_to_class: Dict[int, int] = {}
+    for value in label_to_index.values():
+        root = dsu.find(value)
+        if root not in root_to_class:
+            root_to_class[root] = len(root_to_class)
+
+    rows = len(code)
+    columns = len(root_to_class)
+    if rows <= 1 or columns <= 1:
+        return ()
+    minor_size = min(rows, columns) - 1
+    row_specs: List[Tuple[int, int, int, int]] = []
+    for row in range(minor_size):
+        row_specs.append((
+            root_to_class[dsu.find(label_to_index[diagram.label_at(row, 0)])],
+            root_to_class[dsu.find(label_to_index[diagram.label_at(row, 1)])],
+            root_to_class[dsu.find(label_to_index[diagram.label_at(row, 2)])],
+            diagram.signs[row],
+        ))
+
+    roots: List[int] = []
+    for t_value in range(1, modulus):
+        check_timeout(timeout, deadline)
+        minor = [[0 for _ in range(minor_size)] for _ in range(minor_size)]
+        one_minus_t = (1 - t_value) % modulus
+        for row, (under_in, over, under_out, sign) in enumerate(row_specs):
+            def add_value(column: int, value: int) -> None:
+                if column >= minor_size:
+                    return
+                minor[row][column] = (minor[row][column] + value) % modulus
+
+            if sign == 1:
+                add_value(over, one_minus_t)
+                add_value(under_in, t_value)
+                add_value(under_out, -1)
+            else:
+                add_value(over, one_minus_t)
+                add_value(under_in, -1)
+                add_value(under_out, t_value)
+        if _determinant_mod_prime(minor, modulus) == 0:
+            roots.append(t_value)
+    return tuple(roots)
+
+
+def _reapr_invariant_profile(
+    code: PDCode,
+    crossingless_components: int,
+    timeout: int,
+    deadline: Optional[float],
+    include_alexander_roots: bool,
+) -> ReaprInvariantProfile:
+    profile = ReaprInvariantProfile(
+        components=analyze_components(code, crossingless_components).total_components,
+        determinant_fingerprint=tuple(_alexander_determinant_fingerprint(code)),
+        goeritz_signature_pair=_goeritz_signature_pair(code),
+    )
+    if include_alexander_roots:
+        profile.alexander_roots_evaluated = True
+        profile.alexander_roots_mod_11 = _alexander_roots_mod_prime(code, 11, timeout, deadline)
+        profile.alexander_roots_mod_19 = _alexander_roots_mod_prime(code, 19, timeout, deadline)
+        profile.alexander_roots_mod_31 = _alexander_roots_mod_prime(code, 31, timeout, deadline)
+    return profile
+
+
+def _reapr_basic_profiles_equal(
+    before: ReaprInvariantProfile,
+    after: ReaprInvariantProfile,
+) -> bool:
+    return (
+        before.components == after.components
+        and before.determinant_fingerprint == after.determinant_fingerprint
+        and before.goeritz_signature_pair == after.goeritz_signature_pair
+    )
+
+
+def _reapr_profiles_equal(
+    before: ReaprInvariantProfile,
+    after: ReaprInvariantProfile,
+) -> bool:
+    return (
+        _reapr_basic_profiles_equal(before, after)
+        and before.alexander_roots_evaluated
+        and after.alexander_roots_evaluated
+        and before.alexander_roots_mod_11 == after.alexander_roots_mod_11
+        and before.alexander_roots_mod_19 == after.alexander_roots_mod_19
+        and before.alexander_roots_mod_31 == after.alexander_roots_mod_31
+    )
+
+
+def _reapr_invariant_profile_string(profile: ReaprInvariantProfile) -> str:
+    roots = (
+        (
+            f"alexander_roots_mod_11={_int_vector_string(profile.alexander_roots_mod_11)}; "
+            f"alexander_roots_mod_19={_int_vector_string(profile.alexander_roots_mod_19)}; "
+            f"alexander_roots_mod_31={_int_vector_string(profile.alexander_roots_mod_31)}"
+        )
+        if profile.alexander_roots_evaluated
+        else (
+            "alexander_roots_mod_11=not_evaluated; "
+            "alexander_roots_mod_19=not_evaluated; "
+            "alexander_roots_mod_31=not_evaluated"
+        )
+    )
+    return (
+        f"components={profile.components}; "
+        f"determinant={_determinant_fingerprint_string(profile.determinant_fingerprint)}; "
+        f"goeritz_signature_pair={_int_vector_string(profile.goeritz_signature_pair)}; "
+        f"{roots}"
+    )
+
+
 def _torus_2_odd_pd_code(crossings: int) -> PDCode:
     if crossings <= 0 or crossings % 2 == 0:
         return []
@@ -3529,15 +3859,137 @@ def _torus_2_odd_pd_code(crossings: int) -> PDCode:
     return _canonical_output_code(code)
 
 
+def _splitmix64_next(state: int) -> Tuple[int, int]:
+    state = (state + 0x9E3779B97F4A7C15) & UINT64_MASK
+    value = state
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & UINT64_MASK
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & UINT64_MASK
+    return state, (value ^ (value >> 31)) & UINT64_MASK
+
+
+def _deterministic_random_int(state: int, low: int, high: int) -> Tuple[int, int]:
+    if high <= low:
+        return state, low
+    state, value = _splitmix64_next(state)
+    return state, low + int(value % (high - low + 1))
+
+
+def _reapr_seed_for_attempt(attempt: int, determinant: int, crossings: int) -> int:
+    state = 0xD6E8FEB86659FD93
+    state ^= ((attempt + 1) * 0x9E3779B97F4A7C15) & UINT64_MASK
+    state ^= (max(0, determinant) * 0xBF58476D1CE4E5B9) & UINT64_MASK
+    state ^= (max(0, crossings) * 0x94D049BB133111EB) & UINT64_MASK
+    _, value = _splitmix64_next(state & UINT64_MASK)
+    return value
+
+
+def _closed_braid_pd_code(strands: int, word: Sequence[int]) -> PDCode:
+    if strands < 2 or not word:
+        return []
+    current = list(range(strands))
+    next_label = strands
+    code: PDCode = []
+    for generator in word:
+        position = abs(generator) - 1
+        if position < 0 or position + 1 >= strands:
+            return []
+        top_left = current[position]
+        top_right = current[position + 1]
+        bottom_left = next_label
+        bottom_right = next_label + 1
+        next_label += 2
+        if generator > 0:
+            code.append((top_right, bottom_right, bottom_left, top_left))
+        else:
+            code.append((top_right, top_left, bottom_left, bottom_right))
+        current[position] = bottom_left
+        current[position + 1] = bottom_right
+
+    replaced: PDCode = []
+    for crossing in code:
+        replaced.append(tuple(
+            current[label] if 0 <= label < strands else label
+            for label in crossing
+        ))  # type: ignore[arg-type]
+    try:
+        return _canonical_output_code(replaced)
+    except Exception:
+        return []
+
+
+def _reapr_candidate_codes_for_attempt(
+    determinant: int,
+    original_crossings: int,
+    attempt: int,
+) -> List[PDCode]:
+    candidates: List[PDCode] = []
+    seen: Set[str] = set()
+    maximum_candidate_crossings = max(0, min(original_crossings - 1, 96))
+
+    def append_candidate(candidate: PDCode, allow_empty: bool) -> None:
+        if not candidate:
+            if allow_empty and "PD[]" not in seen:
+                seen.add("PD[]")
+                candidates.append(candidate)
+            return
+        if len(candidate) >= original_crossings:
+            return
+        key = format_final_pd_code(candidate)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(candidate)
+
+    if attempt == 0:
+        if determinant == 1:
+            append_candidate([], True)
+        elif determinant > 1 and determinant % 2 and determinant < original_crossings:
+            append_candidate(_torus_2_odd_pd_code(determinant), False)
+        return candidates
+
+    if maximum_candidate_crossings < 3:
+        return candidates
+
+    state = _reapr_seed_for_attempt(attempt, determinant, original_crossings)
+    if determinant > 1 and determinant % 2 and determinant <= maximum_candidate_crossings:
+        append_candidate(_closed_braid_pd_code(2, [-1] * determinant), False)
+
+    for _candidate_index in range(12):
+        state, strands = _deterministic_random_int(state, 3, 7)
+        minimum_length = 3
+        if determinant > 1 and determinant < maximum_candidate_crossings:
+            minimum_length = max(3, min(maximum_candidate_crossings, determinant - 4))
+        state, length = _deterministic_random_int(
+            state,
+            minimum_length,
+            maximum_candidate_crossings,
+        )
+        word: List[int] = []
+        previous = 0
+        for _index in range(length):
+            state, generator = _deterministic_random_int(state, 1, strands - 1)
+            state, sign_roll = _deterministic_random_int(state, 0, 99)
+            sign = -1 if sign_roll < 40 else 1
+            if previous and generator == abs(previous) and sign == (-1 if previous > 0 else 1):
+                sign *= -1
+            signed_generator = sign * generator
+            word.append(signed_generator)
+            previous = signed_generator
+        append_candidate(_closed_braid_pd_code(strands, word), False)
+    return candidates
+
+
 @dataclass
 class ReaprOracleResult:
     accepted: bool = False
     rejected: bool = False
+    attempts: int = 0
     code: PDCode = field(default_factory=list)
     crossingless_components: int = 0
     status: str = ""
     determinant_before: str = ""
     determinant_after: str = ""
+    invariants_before: str = ""
+    invariants_after: str = ""
 
 
 def _crossingless_components_for_candidate(
@@ -3557,6 +4009,7 @@ def _try_reapr_oracle(
     crossingless_components: int,
     timeout: int,
     deadline: Optional[float],
+    reapr_retry_max: int,
 ) -> ReaprOracleResult:
     result = ReaprOracleResult()
     before = _alexander_determinant_fingerprint(code)
@@ -3576,33 +4029,93 @@ def _try_reapr_oracle(
         result.status = "skipped_ambiguous_determinant_fingerprint"
         return result
 
-    if determinant == 1:
-        candidate: PDCode = []
-    elif determinant > 1 and determinant % 2 and determinant < len(code):
-        candidate = _torus_2_odd_pd_code(determinant)
+    if reapr_retry_max == 0:
+        result.status = "skipped_reapr_retry_max_zero"
+        return result
+
+    saw_candidate = False
+    saw_rejected_candidate = False
+    before_basic_profile: Optional[ReaprInvariantProfile] = None
+    before_full_profile: Optional[ReaprInvariantProfile] = None
+
+    for attempt in range(reapr_retry_max):
+        check_timeout(timeout, deadline)
+        result.attempts = attempt + 1
+        candidates = _reapr_candidate_codes_for_attempt(determinant, len(code), attempt)
+        for candidate_index, candidate in enumerate(candidates):
+            check_timeout(timeout, deadline)
+            if len(candidate) >= len(code):
+                continue
+            saw_candidate = True
+            candidate_crossingless_components = _crossingless_components_for_candidate(
+                code, crossingless_components, candidate
+            )
+            if before_basic_profile is None:
+                before_basic_profile = _reapr_invariant_profile(
+                    code,
+                    crossingless_components,
+                    timeout,
+                    deadline,
+                    False,
+                )
+                result.determinant_before = _determinant_fingerprint_string(
+                    before_basic_profile.determinant_fingerprint
+                )
+                result.invariants_before = _reapr_invariant_profile_string(before_basic_profile)
+            after_profile = _reapr_invariant_profile(
+                candidate,
+                candidate_crossingless_components,
+                timeout,
+                deadline,
+                False,
+            )
+            result.determinant_after = _determinant_fingerprint_string(
+                after_profile.determinant_fingerprint
+            )
+            result.invariants_after = _reapr_invariant_profile_string(after_profile)
+            if not _reapr_basic_profiles_equal(before_basic_profile, after_profile):
+                saw_rejected_candidate = True
+                result.rejected = True
+                continue
+
+            if before_full_profile is None:
+                before_full_profile = _reapr_invariant_profile(
+                    code,
+                    crossingless_components,
+                    timeout,
+                    deadline,
+                    True,
+                )
+                result.invariants_before = _reapr_invariant_profile_string(before_full_profile)
+            after_profile = _reapr_invariant_profile(
+                candidate,
+                candidate_crossingless_components,
+                timeout,
+                deadline,
+                True,
+            )
+            result.invariants_after = _reapr_invariant_profile_string(after_profile)
+            if not _reapr_profiles_equal(before_full_profile, after_profile):
+                saw_rejected_candidate = True
+                result.rejected = True
+                continue
+
+            result.accepted = True
+            result.status = (
+                "accepted_empty_projection"
+                if not candidate
+                else ("accepted_projection_template" if attempt == 0 else "accepted_retry_projection")
+            )
+            result.code = candidate
+            result.crossingless_components = candidate_crossingless_components
+            return result
+
+    if saw_rejected_candidate:
+        result.status = "rejected_invariant_changed"
+    elif saw_candidate:
+        result.status = "rejected_no_matching_profile"
     else:
         result.status = "skipped_no_smaller_projection_template"
-        return result
-
-    check_timeout(timeout, deadline)
-    candidate = _canonical_output_code(candidate)
-    if len(candidate) >= len(code):
-        result.status = "rejected_candidate_not_smaller"
-        return result
-
-    after = _alexander_determinant_fingerprint(candidate)
-    result.determinant_after = _determinant_fingerprint_string(after)
-    if after != before:
-        result.status = "rejected_determinant_changed"
-        result.rejected = True
-        return result
-
-    result.accepted = True
-    result.status = "accepted_empty_projection" if not candidate else "accepted_torus_projection"
-    result.code = candidate
-    result.crossingless_components = _crossingless_components_for_candidate(
-        code, crossingless_components, candidate
-    )
     return result
 
 
@@ -3620,11 +4133,14 @@ def reduce_pd_code(
     show_step_pd: bool = False,
     step_pd_output: Optional[Callable[[int, PDCode], None]] = None,
     reapr: bool = False,
+    reapr_retry_max: int = 3,
     _timeout_deadline: Optional[float] = None,
 ) -> ReductionResult:
     if max_thread < -1 or max_thread == 0:
         raise ValueError("max_thread must be -1 or a positive integer")
     validate_bruteforce_budget(bruteforce_budget)
+    if reapr_retry_max < 0:
+        raise ValueError("reapr_retry_max must be a non-negative integer")
     deadline = timeout_deadline(timeout, _timeout_deadline)
     output = ReductionResult(
         code=[list(crossing) for crossing in code],
@@ -3642,7 +4158,8 @@ def reduce_pd_code(
                 f"max_thread={max_thread} bruteforce_budget={bruteforce_budget} "
                 f"timeout={timeout} "
                 f"heuristic={'off' if ban_heuristic else 'on'} "
-                f"reapr={'on' if reapr else 'off'}"
+                f"reapr={'on' if reapr else 'off'} "
+                f"reapr_retry_max={reapr_retry_max}"
             ),
         )
         prepared = simplify_pd_code(code, known_crossingless_components, timeout, deadline)
@@ -3680,11 +4197,15 @@ def reduce_pd_code(
                 output.crossingless_components,
                 timeout,
                 deadline,
+                reapr_retry_max,
             )
             output.alexander_determinant_before = reapr_result.determinant_before
             output.alexander_determinant_after = reapr_result.determinant_after
+            output.reapr_invariants_before = reapr_result.invariants_before
+            output.reapr_invariants_after = reapr_result.invariants_after
             output.reapr_status = reapr_result.status
             output.reapr_rejected = reapr_result.rejected
+            output.reapr_attempts = reapr_result.attempts
             if reapr_result.accepted:
                 output.reapr_used = True
                 output.reapr_rounds += 1
@@ -3705,10 +4226,13 @@ def reduce_pd_code(
                 (
                     f"reapr_oracle_done status={output.reapr_status} "
                     f"accepted={'yes' if output.reapr_used else 'no'} "
+                    f"attempts={output.reapr_attempts} "
                     f"input_crossings={before_reapr_crossings} "
                     f"output_crossings={len(output.code)} "
                     f"determinant_before={output.alexander_determinant_before} "
-                    f"determinant_after={output.alexander_determinant_after}"
+                    f"determinant_after={output.alexander_determinant_after} "
+                    f"invariants_before=\"{output.reapr_invariants_before}\" "
+                    f"invariants_after=\"{output.reapr_invariants_after}\""
                 ),
             )
 
@@ -4162,6 +4686,7 @@ def run_job(
     show_step_pd: bool = False,
     step_label: Optional[str] = None,
     reapr: bool = False,
+    reapr_retry_max: int = 3,
 ) -> Tuple[
     ReductionResult,
     ComponentAnalysis,
@@ -4192,6 +4717,7 @@ def run_job(
             ),
             show_step_pd=show_step_pd,
             reapr=reapr,
+            reapr_retry_max=reapr_retry_max,
             step_pd_output=(
                 lambda round_index, step_code: print(
                     (
@@ -4251,12 +4777,15 @@ def print_text_result(
     print(f"last_path_search_mode: {result.last_path_search_mode}")
     print(f"reapr_used: {'yes' if result.reapr_used else 'no'}")
     print(f"reapr_rounds: {result.reapr_rounds}")
+    print(f"reapr_attempts: {result.reapr_attempts}")
     print(f"reapr_rejected: {'yes' if result.reapr_rejected else 'no'}")
     print(f"reapr_status: {result.reapr_status}")
     if result.reapr_warning:
         print(f"reapr_warning: {result.reapr_warning}")
     print(f"alexander_determinant_before: {result.alexander_determinant_before}")
     print(f"alexander_determinant_after: {result.alexander_determinant_after}")
+    print(f"reapr_invariants_before: {result.reapr_invariants_before}")
+    print(f"reapr_invariants_after: {result.reapr_invariants_after}")
     print(f"stopped_by_round_limit: {'yes' if result.stopped_by_round_limit else 'no'}")
     print(f"timed_out: {'yes' if result.timed_out else 'no'}")
     print(f"resource_limited: {'yes' if result.resource_limited else 'no'}")
@@ -4300,7 +4829,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reapr",
         action="store_true",
-        help="enable the experimental determinant-guarded projection oracle",
+        help="enable the experimental invariant-guarded projection oracle",
+    )
+    parser.add_argument(
+        "--reapr-retry-max",
+        type=int,
+        default=3,
+        help="maximum deterministic REAPR retry attempts",
     )
     parser.add_argument(
         "--reduction-round",
@@ -4387,6 +4922,8 @@ def main_impl(argv: Sequence[str]) -> int:
         parser.error("--bruteforce-budget must be -1 or a positive integer")
     if args.timeout < -1 or args.timeout == 0:
         parser.error("--timeout must be -1 or a positive integer")
+    if args.reapr_retry_max < 0:
+        parser.error("--reapr-retry-max must be a non-negative integer")
     jobs = collect_jobs(args)
     removed_crossings = parse_removed_crossings(args.remove_crossings)
     show_labels = len(jobs) > 1
@@ -4410,6 +4947,7 @@ def main_impl(argv: Sequence[str]) -> int:
                     verbose=args.verbose,
                     show_step_pd=args.show_step_pd,
                     reapr=args.reapr,
+                    reapr_retry_max=args.reapr_retry_max,
                     step_label=job.label if show_labels else None,
                 )
                 final_components = analyze_components(
@@ -4458,6 +4996,7 @@ def main_impl(argv: Sequence[str]) -> int:
                     verbose=args.verbose,
                     show_step_pd=args.show_step_pd,
                     reapr=args.reapr,
+                    reapr_retry_max=args.reapr_retry_max,
                     step_label=job.label if show_labels else None,
                 )
                 print_text_result(result, input_components, after_removal)

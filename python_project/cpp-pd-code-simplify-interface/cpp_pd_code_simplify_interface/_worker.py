@@ -22,6 +22,7 @@ def main() -> int:
             verbose=bool(request.get("verbose", False)),
             show_step_pd=bool(request.get("show_step_pd", False)),
             reapr=bool(request.get("reapr", False)),
+            reapr_retry_max=int(request.get("reapr_retry_max", 3)),
             known_crossingless_components=int(
                 request.get("known_crossingless_components", 0)
             ),

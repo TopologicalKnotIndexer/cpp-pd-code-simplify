@@ -97,7 +97,8 @@ component.
 --reduction-round K            Maximum mid-simplification rounds; -1 means until stable.
 --max-thread N                 Maximum brute-force worker threads; -1 means auto.
 --bruteforce-budget N          Cap brute-force green-path checks; default 200000, -1 means no cap.
---reapr                        Enable the experimental determinant-guarded projection oracle.
+--reapr                        Enable the experimental invariant-guarded projection oracle.
+--reapr-retry-max N            Maximum deterministic REAPR attempts; default 3.
 --timeout K                    Per-PD-code timeout in seconds; -1 means no timeout.
 --verbose                      Print timestamped progress logs to stderr.
 --show-step-pd                 Print each post-witness PD code to stdout.
@@ -144,11 +145,16 @@ selected for that phase.
 experimental deterministic reembedding/projection oracle after the default
 R1/R2/nugatory preprocessing and before the mid-simplification search. The
 oracle accepts a candidate only when it has fewer crossings and the internal
-Alexander determinant fingerprint is unchanged. This guard is intentionally
-cheap, but it is not a proof that the output is the same knot or link. Output
-therefore includes `reapr_used`, `reapr_status`, `reapr_warning`,
-`alexander_determinant_before`, and `alexander_determinant_after`. Treat any
-`--reapr` result as a candidate that needs independent invariant checks.
+invariant profile is unchanged. The profile includes total component count,
+Alexander determinant, Goeritz signature, and Alexander roots over `F_11`,
+`F_19`, and `F_31`. This guard is stricter than determinant alone, but it is
+not a proof that the output is the same knot or link. Output therefore
+includes `reapr_used`, `reapr_status`, `reapr_warning`,
+`alexander_determinant_before`, `alexander_determinant_after`,
+`reapr_invariants_before`, and `reapr_invariants_after`. Treat any `--reapr`
+result as a candidate that still needs independent invariant checks.
+`--reapr-retry-max N` controls the bounded deterministic retry sequence used
+after a rejected first template. `N=0` disables REAPR candidate attempts.
 
 `--timeout -1` is the default and disables time limits. `--timeout K`, where
 `K` is a positive integer, stops the current PD-code job after approximately
