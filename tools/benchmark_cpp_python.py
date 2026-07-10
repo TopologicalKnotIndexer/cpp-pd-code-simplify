@@ -36,6 +36,24 @@ INTERFACE_ROOT = ROOT / "python_project" / "cpp-pd-code-simplify-interface"
 RawRow = Dict[str, object]
 SummaryRow = Dict[str, object]
 
+NON_SEMANTIC_RESULT_KEYS = {
+    "label",
+    "tested_red_paths",
+    "tested_green_paths",
+}
+
+
+def canonical_result(data: Dict[str, object]) -> Dict[str, object]:
+    return {
+        key: value
+        for key, value in data.items()
+        if key not in NON_SEMANTIC_RESULT_KEYS
+    }
+
+
+def canonical_results(payload: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+    return [canonical_result(item) for item in payload]
+
 
 def default_cpp_exe() -> str:
     candidates = [
@@ -292,7 +310,7 @@ def run_benchmark(
                     verbose=verbose,
                 )
                 payload = result_list(stdout)
-                repeat_results[engine] = payload
+                repeat_results[engine] = canonical_results(payload)
                 row: RawRow = {
                     "case": "batch",
                     "family": "mixed",
