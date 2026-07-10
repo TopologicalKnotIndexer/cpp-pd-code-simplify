@@ -61,7 +61,6 @@ vcpkg_installed/
 Testing/
 .cache/
 .local_toolchains/
-tests/pd_code.zip
 .venv/
 venv/
 __pycache__/

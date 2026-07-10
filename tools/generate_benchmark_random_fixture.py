@@ -67,7 +67,7 @@ def render_fixture(
             f"# Selection: seed={seed}, sample_size={sample_size}, "
             f"prefix_size={prefix_size}, source files with <= {max_crossings} crossings."
         ),
-        "# The source zip is local-only and is not committed.",
+        "# The source zip is committed at tests/pd_code.zip.",
     ]
     for index, (name, crossings, text) in enumerate(selected, 1):
         lines.append(f"# source={name}; crossings={crossings}")
@@ -77,7 +77,7 @@ def render_fixture(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--zip", type=Path, default=DEFAULT_ZIP, help="local pd_code.zip path")
+    parser.add_argument("--zip", type=Path, default=DEFAULT_ZIP, help="pd_code.zip path")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="fixture file to write")
     parser.add_argument("--seed", type=int, default=20260708)
     parser.add_argument("--sample-size", type=int, default=100)

@@ -30,17 +30,17 @@ The inflated cases preserve the underlying knot type because each added
 crossing is introduced by a reverse type-I Reidemeister move. The fixed seeds
 make the generated PD codes stable across platforms.
 
-One hundred `zip_random_*` cases were sampled from the local
-`tests/pd_code.zip` corpus supplied during development. The zip itself is
-ignored and is not committed. The committed fixture
-`tests/benchmark_random_pd_codes.txt` stores the sampled PD codes so the
-benchmark remains reproducible without the original archive. The sample uses
-seed `20260708` and source files with at most 150 crossings; the resulting
-cases span 120 to 150 crossings. The active large benchmark intentionally uses
-the one hundred stored `zip_random_*` cases. Runs use batch-mode input so process
-startup is paid once per engine rather than once per PD code.
+One hundred `zip_random_*` cases were sampled from the committed
+`tests/pd_code.zip` corpus. The lightweight fixture
+`tests/benchmark_random_pd_codes.txt` stores those sampled PD codes so the
+cross-engine benchmark can run quickly without unpacking the whole archive.
+The sample uses seed `20260708` and source files with at most 150 crossings;
+the resulting cases span 120 to 150 crossings. The active large benchmark
+intentionally uses the one hundred stored `zip_random_*` cases. Runs use
+batch-mode input so process startup is paid once per engine rather than once
+per PD code.
 
-When the local zip fixture is present, regenerate the committed sample with:
+Regenerate the committed sample with:
 
 ```sh
 python tools/generate_benchmark_random_fixture.py --sample-size 100 --prefix-size 20

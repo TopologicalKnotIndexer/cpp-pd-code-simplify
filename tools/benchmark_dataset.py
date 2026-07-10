@@ -204,7 +204,7 @@ def load_random_cases() -> Tuple[BenchmarkCase, ...]:
                     name,
                     "zip random sample",
                     to_pd_code(job.code),
-                    "Deterministic random sample from the local pd_code.zip corpus.",
+                    "Deterministic random sample from the committed pd_code.zip corpus.",
                 )
             )
     return tuple(cases[:RANDOM_BENCHMARK_LIMIT])

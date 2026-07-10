@@ -22,10 +22,10 @@ from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequ
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ZIP = ROOT / "tests" / "pd_code.zip"
-DEFAULT_CSV = ROOT / "docs" / "assets" / "cpp_zip_random_30_time_scatter.csv"
-DEFAULT_JSON = ROOT / "docs" / "assets" / "cpp_zip_random_30_time_scatter.json"
-DEFAULT_PNG = ROOT / "docs" / "assets" / "cpp_zip_random_30_time_scatter.png"
-DEFAULT_REDUCTION_PNG = ROOT / "docs" / "assets" / "cpp_zip_random_30_crossing_reduction_scatter.png"
+DEFAULT_CSV = ROOT / "docs" / "assets" / "cpp_zip_random_100_time_scatter.csv"
+DEFAULT_JSON = ROOT / "docs" / "assets" / "cpp_zip_random_100_time_scatter.json"
+DEFAULT_PNG = ROOT / "docs" / "assets" / "cpp_zip_random_100_time_scatter.png"
+DEFAULT_REDUCTION_PNG = ROOT / "docs" / "assets" / "cpp_zip_random_100_crossing_reduction_scatter.png"
 DEFAULT_MARKDOWN = ROOT / "docs" / "cpp-time-analysis.md"
 DEFAULT_SEED = 20260709
 
@@ -392,8 +392,7 @@ def write_markdown(
         "# C++ Zip-Random Time Analysis",
         "",
         "This page records a C++-only timing experiment on PD codes sampled from",
-        "`tests/pd_code.zip`. The zip file itself is a local test fixture and is",
-        "not committed to the repository.",
+        "`tests/pd_code.zip`, the committed zip-random corpus fixture.",
         "",
         "## Method",
         "",
@@ -465,7 +464,7 @@ def build_payload(rows: Sequence[Mapping[str, object]], args: argparse.Namespace
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--zip-path", type=Path, default=DEFAULT_ZIP)
-    parser.add_argument("--sample-size", type=int, default=30)
+    parser.add_argument("--sample-size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--executable", type=Path, default=default_executable())
     parser.add_argument("--max-paths", type=int, default=-1)
