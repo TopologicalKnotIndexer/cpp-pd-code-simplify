@@ -186,6 +186,65 @@ def _token_has_any(token: str, needles: Sequence[str]) -> bool:
     return any(needle in token for needle in needles)
 
 
+def _token_is_failure_word(token: str) -> bool:
+    lower = token.lower()
+    contains_needles = (
+        "error",
+        "timeout",
+        "timed_out",
+        "resource_limited",
+        "rejected",
+        "exception",
+        "panic",
+    )
+    exact_needles = {"fail", "failed", "failure"}
+    return any(needle in lower for needle in contains_needles) or lower in exact_needles
+
+
+def _token_is_success_word(token: str) -> bool:
+    return token.lower() in {
+        "yes",
+        "true",
+        "ok",
+        "done",
+        "found",
+        "accepted",
+        "matched",
+        "applied",
+        "success",
+        "improved",
+        "stop_quit_at_crossing",
+    }
+
+
+def _token_is_warning_word(token: str) -> bool:
+    return token.lower() in {"skip", "skipped", "warning", "warn"}
+
+
+def _stage_prefix_length(token: str) -> int:
+    lower = token.lower()
+    stage_prefixes = (
+        "heuristic_search",
+        "non_monotone",
+        "brute_fallback",
+        "adaptive_order",
+        "pre_simplify",
+        "r3_prepass",
+        "r3_failover",
+        "handoff",
+        "progress",
+        "search",
+        "reapr",
+        "start",
+    )
+    for prefix in stage_prefixes:
+        if lower.startswith(prefix) and (
+            len(lower) == len(prefix) or lower[len(prefix)] in "_("
+        ):
+            return len(prefix)
+    return 0
+
+
 def _numberish(text: str) -> bool:
     has_digit = False
     for char in text:
@@ -199,67 +258,112 @@ def _numberish(text: str) -> bool:
 def _color_value(value: str) -> str:
     if not stderr_color_enabled() or not value:
         return value
-    if value in {"yes", "true", "ok"}:
+    lower = value.lower()
+    if lower in {
+        "yes",
+        "true",
+        "ok",
+        "accepted",
+        "matched",
+        "applied",
+        "done",
+        "success",
+        "improved",
+    }:
         return f"{ansi('1;32')}{value}{ansi('0')}"
-    if value in {"no", "false"}:
-        return f"{ansi('2')}{value}{ansi('0')}"
+    if lower in {
+        "no",
+        "false",
+        "failed",
+        "failure",
+        "timeout",
+        "timed_out",
+        "rejected",
+        "resource_limited",
+        "error",
+    }:
+        return f"{ansi('1;91')}{value}{ansi('0')}"
+    if lower in {"skipped", "warning", "warn"}:
+        return f"{ansi('1;35')}{value}{ansi('0')}"
     if _numberish(value):
         return f"{ansi('1;33')}{value}{ansi('0')}"
     return value
 
 
+def _color_status_piece(piece: str) -> str:
+    if not piece:
+        return piece
+    if _token_is_failure_word(piece):
+        return f"{ansi('1;91')}{piece}{ansi('0')}"
+    if _token_is_success_word(piece):
+        return f"{ansi('1;32')}{piece}{ansi('0')}"
+    if _token_is_warning_word(piece):
+        return f"{ansi('1;35')}{piece}{ansi('0')}"
+    if piece.lower() == "start":
+        return f"{ansi('1;36')}{piece}{ansi('0')}"
+    if _numberish(piece):
+        return f"{ansi('1;33')}{piece}{ansi('0')}"
+    return piece
+
+
+def _color_stage_suffix(suffix: str) -> str:
+    output: list[str] = []
+    for index, piece in enumerate(suffix.split("_")):
+        if index:
+            output.append(f"{ansi('2')}_{ansi('0')}")
+        output.append(_color_status_piece(piece))
+    return "".join(output)
+
+
+def _color_stage_payload(payload: str) -> str:
+    output: list[str] = []
+    piece: list[str] = []
+    for char in payload:
+        if char in "(),;":
+            if piece:
+                output.append(_color_token("".join(piece)))
+                piece.clear()
+            output.append(f"{ansi('2')}{char}{ansi('0')}")
+        else:
+            piece.append(char)
+    if piece:
+        output.append(_color_token("".join(piece)))
+    return "".join(output)
+
+
+def _color_stage_token(token: str) -> str:
+    prefix_length = _stage_prefix_length(token)
+    if not prefix_length:
+        return ""
+    suffix = token[prefix_length:]
+    if suffix.startswith("("):
+        return (
+            f"{ansi('1;34')}{token[:prefix_length]}{ansi('0')}"
+            f"{_color_stage_payload(suffix)}"
+        )
+    return (
+        f"{ansi('1;34')}{token[:prefix_length]}{ansi('0')}"
+        f"{_color_stage_suffix(suffix)}"
+    )
+
+
 def _color_token(token: str) -> str:
     if not stderr_color_enabled() or not token:
         return token
-    failure_needles = (
-        "error",
-        "fail",
-        "timeout",
-        "rejected",
-        "resource_limited=true",
-        "resource_limited=yes",
-        "timed_out=true",
-        "found=no",
-        "accepted=no",
-    )
-    success_needles = (
-        "done",
-        "found=yes",
-        "accepted=yes",
-        "status=ok",
-        "stop_quit_at_crossing",
-        "matched",
-        "applied",
-    )
-    stage_needles = (
-        "start",
-        "pre_simplify",
-        "r3_prepass",
-        "search",
-        "non_monotone",
-        "brute_fallback",
-        "r3_failover",
-        "reapr",
-        "handoff",
-        "adaptive_order",
-        "progress",
-    )
     if token == "->":
         return f"{ansi('2')}{token}{ansi('0')}"
+    stage_token = _color_stage_token(token)
+    if stage_token:
+        return stage_token
     if "=" in token:
         key, value = token.split("=", 1)
-        prefix = f"{key}="
-        if _token_has_any(token, failure_needles):
-            return f"{ansi('1;31')}{prefix}{_color_value(value)}{ansi('0')}"
-        if _token_has_any(token, success_needles):
-            return f"{ansi('1;32')}{prefix}{_color_value(value)}{ansi('0')}"
-        return f"{ansi('36')}{prefix}{ansi('0')}{_color_value(value)}"
-    if _token_has_any(token, failure_needles):
-        return f"{ansi('1;31')}{token}{ansi('0')}"
-    if _token_has_any(token, success_needles):
+        return f"{ansi('36')}{key}={ansi('0')}{_color_value(value)}"
+    if _token_is_failure_word(token):
+        return f"{ansi('1;91')}{token}{ansi('0')}"
+    if _token_is_success_word(token):
         return f"{ansi('1;32')}{token}{ansi('0')}"
-    if _token_has_any(token, stage_needles):
-        return f"{ansi('1;34')}{token}{ansi('0')}"
+    if _token_is_warning_word(token):
+        return f"{ansi('1;35')}{token}{ansi('0')}"
     if _numberish(token):
         return f"{ansi('1;33')}{token}{ansi('0')}"
     return token

@@ -1,6 +1,6 @@
 [project]
 name = "cpp-pd-code-simplify-interface"
-version = "0.1.44"
+version = "0.1.46"
 description = "Python interface for cpp-pd-code-simplify with runtime C++ compilation."
 authors = [
     {name = "GGN_2015", email = "neko@jlulug.org"}

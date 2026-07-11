@@ -287,45 +287,82 @@ std::string ansi(const char* code) {
     return stderr_color_enabled() ? std::string("\x1b[") + code + "m" : std::string();
 }
 
+std::string lower_copy(std::string text) {
+    for (char& c : text) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return text;
+}
+
 bool contains_text(const std::string& text, const std::string& needle) {
     return text.find(needle) != std::string::npos;
 }
 
-bool token_has_failure(const std::string& token) {
-    static const char* needles[] = {
-        "error", "fail", "timeout", "rejected", "resource_limited=true",
-        "resource_limited=yes", "timed_out=true", "found=no", "accepted=no"};
-    for (const char* needle : needles) {
-        if (contains_text(token, needle)) {
+bool text_has_any(const std::string& text, const char* const* needles, std::size_t count) {
+    for (std::size_t i = 0; i < count; ++i) {
+        if (contains_text(text, needles[i])) {
             return true;
         }
     }
     return false;
 }
 
-bool token_has_success(const std::string& token) {
-    static const char* needles[] = {
-        "done", "found=yes", "accepted=yes", "status=ok",
-        "stop_quit_at_crossing", "matched", "applied"};
-    for (const char* needle : needles) {
-        if (contains_text(token, needle)) {
+bool text_equals_any(const std::string& text, const char* const* needles, std::size_t count) {
+    for (std::size_t i = 0; i < count; ++i) {
+        if (text == needles[i]) {
             return true;
         }
     }
     return false;
 }
 
-bool token_has_stage(const std::string& token) {
+bool token_is_failure_word(const std::string& token) {
+    const std::string lower = lower_copy(token);
+    static const char* contains_needles[] = {
+        "error", "timeout", "timed_out", "resource_limited", "rejected", "exception", "panic"};
+    static const char* exact_needles[] = {"fail", "failed", "failure"};
+    return text_has_any(lower, contains_needles, sizeof(contains_needles) / sizeof(contains_needles[0])) ||
+           text_equals_any(lower, exact_needles, sizeof(exact_needles) / sizeof(exact_needles[0]));
+}
+
+bool token_is_success_word(const std::string& token) {
+    const std::string lower = lower_copy(token);
     static const char* needles[] = {
-        "start", "pre_simplify", "r3_prepass", "search", "non_monotone",
-        "brute_fallback", "r3_failover", "reapr", "handoff", "adaptive_order",
-        "progress"};
+        "yes", "true", "ok", "done", "found", "accepted", "matched", "applied",
+        "success", "improved", "stop_quit_at_crossing"};
     for (const char* needle : needles) {
-        if (contains_text(token, needle)) {
+        if (lower == needle) {
             return true;
         }
     }
     return false;
+}
+
+bool token_is_warning_word(const std::string& token) {
+    const std::string lower = lower_copy(token);
+    static const char* needles[] = {"skip", "skipped", "warning", "warn"};
+    for (const char* needle : needles) {
+        if (lower == needle) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::size_t stage_prefix_length(const std::string& token) {
+    const std::string lower = lower_copy(token);
+    static const char* needles[] = {
+        "heuristic_search", "non_monotone", "brute_fallback", "adaptive_order",
+        "pre_simplify", "r3_prepass", "r3_failover", "handoff", "progress",
+        "search", "reapr", "start"};
+    for (const char* needle : needles) {
+        const std::size_t n = std::string(needle).size();
+        if (lower.compare(0, n, needle) == 0 &&
+            (lower.size() == n || lower[n] == '_' || lower[n] == '(')) {
+            return n;
+        }
+    }
+    return 0;
 }
 
 bool string_is_numberish(const std::string& text) {
@@ -347,16 +384,102 @@ std::string colorize_value(const std::string& value) {
     if (!stderr_color_enabled() || value.empty()) {
         return value;
     }
-    if (value == "yes" || value == "true" || value == "ok") {
+    const std::string lower = lower_copy(value);
+    if (lower == "yes" || lower == "true" || lower == "ok" ||
+        lower == "accepted" || lower == "matched" || lower == "applied" ||
+        lower == "done" || lower == "success" || lower == "improved") {
         return ansi("1;32") + value + ansi("0");
     }
-    if (value == "no" || value == "false") {
-        return ansi("2") + value + ansi("0");
+    if (lower == "no" || lower == "false" || lower == "failed" || lower == "failure" ||
+        lower == "timeout" || lower == "timed_out" || lower == "rejected" ||
+        lower == "resource_limited" || lower == "error") {
+        return ansi("1;91") + value + ansi("0");
+    }
+    if (lower == "skipped" || lower == "warning" || lower == "warn") {
+        return ansi("1;35") + value + ansi("0");
     }
     if (string_is_numberish(value)) {
         return ansi("1;33") + value + ansi("0");
     }
     return value;
+}
+
+std::string colorize_status_piece(const std::string& piece) {
+    if (piece.empty()) {
+        return piece;
+    }
+    if (token_is_failure_word(piece)) {
+        return ansi("1;91") + piece + ansi("0");
+    }
+    if (token_is_success_word(piece)) {
+        return ansi("1;32") + piece + ansi("0");
+    }
+    if (token_is_warning_word(piece)) {
+        return ansi("1;35") + piece + ansi("0");
+    }
+    if (lower_copy(piece) == "start") {
+        return ansi("1;36") + piece + ansi("0");
+    }
+    if (string_is_numberish(piece)) {
+        return ansi("1;33") + piece + ansi("0");
+    }
+    return piece;
+}
+
+std::string colorize_stage_suffix(const std::string& suffix) {
+    std::ostringstream output;
+    std::string piece;
+    for (char c : suffix) {
+        if (c == '_') {
+            if (!piece.empty()) {
+                output << colorize_status_piece(piece);
+                piece.clear();
+            }
+            output << ansi("2") << c << ansi("0");
+        } else {
+            piece.push_back(c);
+        }
+    }
+    if (!piece.empty()) {
+        output << colorize_status_piece(piece);
+    }
+    return output.str();
+}
+
+std::string colorize_log_token(const std::string& token);
+
+std::string colorize_stage_payload(const std::string& payload) {
+    std::ostringstream output;
+    std::string piece;
+    for (char c : payload) {
+        if (c == '(' || c == ')' || c == ',' || c == ';') {
+            if (!piece.empty()) {
+                output << colorize_log_token(piece);
+                piece.clear();
+            }
+            output << ansi("2") << c << ansi("0");
+        } else {
+            piece.push_back(c);
+        }
+    }
+    if (!piece.empty()) {
+        output << colorize_log_token(piece);
+    }
+    return output.str();
+}
+
+std::string colorize_stage_token(const std::string& token) {
+    const std::size_t prefix_length = stage_prefix_length(token);
+    if (prefix_length == 0) {
+        return std::string();
+    }
+    const std::string suffix = token.substr(prefix_length);
+    if (!suffix.empty() && suffix[0] == '(') {
+        return ansi("1;34") + token.substr(0, prefix_length) + ansi("0") +
+               colorize_stage_payload(suffix);
+    }
+    return ansi("1;34") + token.substr(0, prefix_length) + ansi("0") +
+           colorize_stage_suffix(suffix);
 }
 
 std::string colorize_log_token(const std::string& token) {
@@ -366,26 +489,24 @@ std::string colorize_log_token(const std::string& token) {
     if (token == "->") {
         return ansi("2") + token + ansi("0");
     }
+    const std::string stage_token = colorize_stage_token(token);
+    if (!stage_token.empty()) {
+        return stage_token;
+    }
     const std::size_t equals = token.find('=');
     if (equals != std::string::npos && equals + 1 < token.size()) {
         const std::string key = token.substr(0, equals + 1);
         const std::string value = token.substr(equals + 1);
-        if (token_has_failure(token)) {
-            return ansi("1;31") + key + colorize_value(value) + ansi("0");
-        }
-        if (token_has_success(token)) {
-            return ansi("1;32") + key + colorize_value(value) + ansi("0");
-        }
         return ansi("36") + key + ansi("0") + colorize_value(value);
     }
-    if (token_has_failure(token)) {
-        return ansi("1;31") + token + ansi("0");
+    if (token_is_failure_word(token)) {
+        return ansi("1;91") + token + ansi("0");
     }
-    if (token_has_success(token)) {
+    if (token_is_success_word(token)) {
         return ansi("1;32") + token + ansi("0");
     }
-    if (token_has_stage(token)) {
-        return ansi("1;34") + token + ansi("0");
+    if (token_is_warning_word(token)) {
+        return ansi("1;35") + token + ansi("0");
     }
     if (string_is_numberish(token)) {
         return ansi("1;33") + token + ansi("0");
