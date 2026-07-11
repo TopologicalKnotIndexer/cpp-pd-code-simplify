@@ -26,12 +26,13 @@ For CLI options, see [Command-line interface](docs/cli.md).
 Install and use the Python C++ interface:
 
 ```sh
+g++ --version
 pip install cpp-pd-code-simplify-interface
 python -m cpp_pd_code_simplify_interface "PD[]"
 ```
 
-The package compiles a cached local dynamic library on first use, so a C++17
-compiler must be available. From Python:
+The PyPI package compiles a cached local dynamic library on first use, so
+`g++` must be available from `PATH` before running it. From Python:
 
 ```python
 import cpp_pd_code_simplify_interface as simplify
