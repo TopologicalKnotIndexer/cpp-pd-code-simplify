@@ -104,11 +104,17 @@ contains the current best PD code and sets `resource_limited` to `True`.
 Verbose log lines use local
 wall-clock time in `YYYY-MM-DD HH:MM:SS` format. When `max_thread=-1` reaches a
 brute-force search phase, verbose logs also include `actual_threads`, the
-worker count selected by the C++ backend for that phase. Calls run the C++
-backend in a helper process, so `Ctrl+C` can terminate active C++ work and its
-worker threads cleanly before the Python process exits. Pass `log_file=PATH`,
-or use CLI flag `--log-file PATH`, to tee stdout and stderr output into a
-flushed backup log file.
+worker count selected by the C++ backend for that phase. If stderr is a
+terminal or PTY, verbose stderr logs use ANSI colors to distinguish timestamps,
+package names, stage names, numeric values, success markers, and failure or
+timeout markers. If stderr is a pipe, regular file, or other non-terminal
+target, logs stay plain text. Set `NO_COLOR=1` or `TERM=dumb` to force plain
+stderr output. Calls run the C++ backend in a helper process, so `Ctrl+C` can
+terminate active C++ work and its worker threads cleanly before the Python
+process exits. Pass `log_file=PATH`, or use CLI flag `--log-file PATH`, to tee
+stdout and stderr output into a flushed backup log file. The backup log file is
+always written without ANSI color codes, even when terminal stderr is
+colorized.
 
 Pass `reapr=True`, or use CLI flag `--reapr`, to enable the experimental
 invariant-guarded projection oracle in the native backend. It is disabled by

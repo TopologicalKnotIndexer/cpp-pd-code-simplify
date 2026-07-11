@@ -151,7 +151,11 @@ failover all fail on the canonical handoff state. Verbose mode prints
 Verbose log lines are prefixed with local wall-clock time in
 `YYYY-MM-DD HH:MM:SS` format. When `--max-thread -1` reaches a brute-force
 search phase, verbose logs also include `actual_threads`, the worker count
-selected for that phase.
+selected for that phase. If stderr is a terminal or PTY, verbose stderr logs
+use ANSI colors to distinguish timestamps, package names, stage names, numeric
+values, success markers, and failure or timeout markers. If stderr is a pipe,
+regular file, or other non-terminal target, logs stay plain text. Set
+`NO_COLOR=1` or `TERM=dumb` to force plain stderr output.
 
 `--reapr` is disabled by default. When enabled, the executable tries an
 experimental deterministic reembedding/projection oracle after the default
@@ -193,7 +197,8 @@ uses stdout and is therefore intentionally off by default, especially when
 
 `--log-file FILEPATH` tees everything written to stdout and stderr into the
 given file and flushes that file after each write. The normal terminal output
-is unchanged.
+is unchanged. The backup log file is always written without ANSI color codes,
+even when terminal stderr is colorized.
 
 ## Component Accounting
 

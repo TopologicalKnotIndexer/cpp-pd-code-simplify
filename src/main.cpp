@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -20,9 +22,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <io.h>
 #else
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace {
@@ -50,7 +54,12 @@ protected:
         std::lock_guard<std::mutex> lock(mutex_);
         const char c = static_cast<char>(ch);
         const bool ok_primary = primary_->sputc(c) != traits_type::eof();
-        const bool ok_backup = backup_->sputc(c) != traits_type::eof();
+        std::string backup_text;
+        append_backup_char(c, backup_text);
+        const bool ok_backup =
+            backup_text.empty() ||
+            backup_->sputn(backup_text.data(), static_cast<std::streamsize>(backup_text.size())) ==
+                static_cast<std::streamsize>(backup_text.size());
         backup_->pubsync();
         return ok_primary && ok_backup ? ch : traits_type::eof();
     }
@@ -58,9 +67,23 @@ protected:
     std::streamsize xsputn(const char* text, std::streamsize count) override {
         std::lock_guard<std::mutex> lock(mutex_);
         const std::streamsize primary_count = primary_->sputn(text, count);
-        const std::streamsize backup_count = backup_->sputn(text, count);
+        std::string backup_text;
+        backup_text.reserve(static_cast<std::size_t>(count));
+        for (std::streamsize i = 0; i < count; ++i) {
+            append_backup_char(text[i], backup_text);
+        }
+        const std::streamsize backup_count =
+            backup_text.empty()
+                ? static_cast<std::streamsize>(0)
+                : backup_->sputn(
+                      backup_text.data(),
+                      static_cast<std::streamsize>(backup_text.size()));
         backup_->pubsync();
-        return primary_count == count && backup_count == count ? count : 0;
+        return primary_count == count &&
+                       (backup_text.empty() ||
+                        backup_count == static_cast<std::streamsize>(backup_text.size()))
+                   ? count
+                   : 0;
     }
 
     int sync() override {
@@ -71,9 +94,35 @@ protected:
     }
 
 private:
+    enum class AnsiState {
+        Plain,
+        Escape,
+        Csi,
+    };
+
+    void append_backup_char(char c, std::string& output) {
+        const unsigned char value = static_cast<unsigned char>(c);
+        if (ansi_state_ == AnsiState::Escape) {
+            ansi_state_ = c == '[' ? AnsiState::Csi : AnsiState::Plain;
+            return;
+        }
+        if (ansi_state_ == AnsiState::Csi) {
+            if (value >= 0x40 && value <= 0x7e) {
+                ansi_state_ = AnsiState::Plain;
+            }
+            return;
+        }
+        if (c == '\x1b') {
+            ansi_state_ = AnsiState::Escape;
+            return;
+        }
+        output.push_back(c);
+    }
+
     std::streambuf* primary_;
     std::streambuf* backup_;
     std::mutex& mutex_;
+    AnsiState ansi_state_ = AnsiState::Plain;
 };
 
 class ScopedStreamRedirect {
@@ -122,7 +171,260 @@ std::string local_timestamp() {
     return out.str();
 }
 
+enum class StderrTargetKind {
+    Terminal,
+    Pipe,
+    File,
+    Character,
+    Other,
+    Unknown,
+};
+
+bool stdout_is_terminal() {
+#ifdef _WIN32
+    const intptr_t fd = _fileno(stdout);
+    if (fd >= 0 && _isatty(static_cast<int>(fd))) {
+        return true;
+    }
+    const HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    DWORD mode = 0;
+    return GetConsoleMode(handle, &mode) != 0;
+#else
+    return isatty(STDOUT_FILENO) != 0;
+#endif
+}
+
+StderrTargetKind stderr_target_kind() {
+#ifdef _WIN32
+    const intptr_t fd = _fileno(stderr);
+    if (fd >= 0 && _isatty(static_cast<int>(fd))) {
+        return StderrTargetKind::Terminal;
+    }
+    const HANDLE handle = GetStdHandle(STD_ERROR_HANDLE);
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
+        return StderrTargetKind::Unknown;
+    }
+    DWORD mode = 0;
+    if (GetConsoleMode(handle, &mode)) {
+        return StderrTargetKind::Terminal;
+    }
+    const DWORD type = GetFileType(handle);
+    if (type == FILE_TYPE_PIPE) {
+        if (stdout_is_terminal()) {
+            return StderrTargetKind::Terminal;
+        }
+        return StderrTargetKind::Pipe;
+    }
+    if (type == FILE_TYPE_DISK) {
+        return StderrTargetKind::File;
+    }
+    if (type == FILE_TYPE_CHAR) {
+        return StderrTargetKind::Character;
+    }
+    if (type == FILE_TYPE_UNKNOWN) {
+        return StderrTargetKind::Unknown;
+    }
+    return StderrTargetKind::Other;
+#else
+    if (isatty(STDERR_FILENO)) {
+        return StderrTargetKind::Terminal;
+    }
+    struct stat info;
+    if (fstat(STDERR_FILENO, &info) != 0) {
+        return StderrTargetKind::Unknown;
+    }
+    if (S_ISFIFO(info.st_mode)
+#ifdef S_ISSOCK
+        || S_ISSOCK(info.st_mode)
+#endif
+    ) {
+        return StderrTargetKind::Pipe;
+    }
+    if (S_ISREG(info.st_mode)) {
+        return StderrTargetKind::File;
+    }
+    if (S_ISCHR(info.st_mode)) {
+        return StderrTargetKind::Character;
+    }
+    return StderrTargetKind::Other;
+#endif
+}
+
+bool terminal_color_allowed() {
+    const char* no_color = std::getenv("NO_COLOR");
+    if (no_color != nullptr && no_color[0] != '\0') {
+        return false;
+    }
+    const char* term = std::getenv("TERM");
+    if (term != nullptr && std::string(term) == "dumb") {
+        return false;
+    }
+    if (stderr_target_kind() != StderrTargetKind::Terminal) {
+        return false;
+    }
+#ifdef _WIN32
+    const HANDLE handle = GetStdHandle(STD_ERROR_HANDLE);
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
+        return true;
+    }
+    DWORD mode = 0;
+    if (GetConsoleMode(handle, &mode)) {
+        SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    }
+#endif
+    return true;
+}
+
+bool stderr_color_enabled() {
+    static const bool enabled = terminal_color_allowed();
+    return enabled;
+}
+
+std::string ansi(const char* code) {
+    return stderr_color_enabled() ? std::string("\x1b[") + code + "m" : std::string();
+}
+
+bool contains_text(const std::string& text, const std::string& needle) {
+    return text.find(needle) != std::string::npos;
+}
+
+bool token_has_failure(const std::string& token) {
+    static const char* needles[] = {
+        "error", "fail", "timeout", "rejected", "resource_limited=true",
+        "resource_limited=yes", "timed_out=true", "found=no", "accepted=no"};
+    for (const char* needle : needles) {
+        if (contains_text(token, needle)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool token_has_success(const std::string& token) {
+    static const char* needles[] = {
+        "done", "found=yes", "accepted=yes", "status=ok",
+        "stop_quit_at_crossing", "matched", "applied"};
+    for (const char* needle : needles) {
+        if (contains_text(token, needle)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool token_has_stage(const std::string& token) {
+    static const char* needles[] = {
+        "start", "pre_simplify", "r3_prepass", "search", "non_monotone",
+        "brute_fallback", "r3_failover", "reapr", "handoff", "adaptive_order",
+        "progress"};
+    for (const char* needle : needles) {
+        if (contains_text(token, needle)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool string_is_numberish(const std::string& text) {
+    bool has_digit = false;
+    for (char c : text) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            has_digit = true;
+            continue;
+        }
+        if (c == '.' || c == '-' || c == '+' || c == ',') {
+            continue;
+        }
+        return false;
+    }
+    return has_digit;
+}
+
+std::string colorize_value(const std::string& value) {
+    if (!stderr_color_enabled() || value.empty()) {
+        return value;
+    }
+    if (value == "yes" || value == "true" || value == "ok") {
+        return ansi("1;32") + value + ansi("0");
+    }
+    if (value == "no" || value == "false") {
+        return ansi("2") + value + ansi("0");
+    }
+    if (string_is_numberish(value)) {
+        return ansi("1;33") + value + ansi("0");
+    }
+    return value;
+}
+
+std::string colorize_log_token(const std::string& token) {
+    if (!stderr_color_enabled() || token.empty()) {
+        return token;
+    }
+    if (token == "->") {
+        return ansi("2") + token + ansi("0");
+    }
+    const std::size_t equals = token.find('=');
+    if (equals != std::string::npos && equals + 1 < token.size()) {
+        const std::string key = token.substr(0, equals + 1);
+        const std::string value = token.substr(equals + 1);
+        if (token_has_failure(token)) {
+            return ansi("1;31") + key + colorize_value(value) + ansi("0");
+        }
+        if (token_has_success(token)) {
+            return ansi("1;32") + key + colorize_value(value) + ansi("0");
+        }
+        return ansi("36") + key + ansi("0") + colorize_value(value);
+    }
+    if (token_has_failure(token)) {
+        return ansi("1;31") + token + ansi("0");
+    }
+    if (token_has_success(token)) {
+        return ansi("1;32") + token + ansi("0");
+    }
+    if (token_has_stage(token)) {
+        return ansi("1;34") + token + ansi("0");
+    }
+    if (string_is_numberish(token)) {
+        return ansi("1;33") + token + ansi("0");
+    }
+    return token;
+}
+
+std::string colorize_log_message(const std::string& message) {
+    if (!stderr_color_enabled()) {
+        return message;
+    }
+    std::ostringstream output;
+    std::string token;
+    for (char c : message) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            if (!token.empty()) {
+                output << colorize_log_token(token);
+                token.clear();
+            }
+            output << c;
+        } else {
+            token.push_back(c);
+        }
+    }
+    if (!token.empty()) {
+        output << colorize_log_token(token);
+    }
+    return output.str();
+}
+
 void print_progress_log(const std::string& message) {
+    if (stderr_color_enabled()) {
+        std::cerr << ansi("2") << '[' << ansi("0")
+                  << ansi("1;36") << "pdcode-simplify" << ansi("0") << ' '
+                  << ansi("2;37") << local_timestamp() << ansi("0")
+                  << ansi("2") << "] " << ansi("0")
+                  << colorize_log_message(message) << '\n';
+        return;
+    }
     std::cerr << "[pdcode-simplify " << local_timestamp() << "] "
               << message << '\n';
 }

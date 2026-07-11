@@ -51,11 +51,15 @@ current best PD code and sets `resource_limited`. Use `--verbose` to print
 timestamped progress logs to stderr. Verbose log lines use local wall-clock time in
 `YYYY-MM-DD HH:MM:SS` format. When `--max-thread -1` reaches a brute-force
 search phase, verbose logs also include `actual_threads`, the worker count
-selected for that phase. `Ctrl+C` cancels active multiprocessing workers and
-exits with status `130`. Final output PD-code strings are normalized for
-display: each crossing is written from the under-incoming edge, labels are
-renumbered along oriented components from `1`, and crossing rows are sorted
-lexicographically.
+selected for that phase. If stderr is a terminal or PTY, verbose stderr logs
+use ANSI colors to distinguish timestamps, package names, stage names, numeric
+values, success markers, and failure or timeout markers. If stderr is a pipe,
+regular file, or other non-terminal target, logs stay plain text. Set
+`NO_COLOR=1` or `TERM=dumb` to force plain stderr output. `Ctrl+C` cancels
+active multiprocessing workers and exits with status `130`. Final output
+PD-code strings are normalized for display: each crossing is written from the
+under-incoming edge, labels are renumbered along oriented components from `1`,
+and crossing rows are sorted lexicographically.
 
 Use `--show-step-pd` to print `step_pd_code[ROUND]: PD[...]` to stdout after
 each mid-simplification witness is applied and canonicalized, before that
@@ -74,7 +78,9 @@ still change the knot or link type; output includes `reapr_warning` when the
 oracle is used. Use `--reapr-retry-max N` to cap the deterministic retry
 sequence; the default is `3`, and `0` disables REAPR candidate attempts.
 Use `--log-file FILEPATH` to tee stdout and stderr into a flushed backup log
-file while keeping the normal terminal output unchanged.
+file while keeping the normal terminal output unchanged. The backup log file is
+always written without ANSI color codes, even when terminal stderr is
+colorized.
 
 Report crossingless components after removing all trefoil crossings:
 

@@ -25,10 +25,15 @@ import cpp_simple_interface
 
 PdInput = Union[str, Sequence[Sequence[int]]]
 PdManyInput = Union[str, Sequence[PdInput]]
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class PdCodeSimplifyInterfaceError(RuntimeError):
     """Raised when the C++ dynamic library cannot be built or called."""
+
+
+def _strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
 
 
 class TeeTextIO:
@@ -42,7 +47,7 @@ class TeeTextIO:
             written = self._primary.write(text)
             self._primary.flush()
             with self._log_file.open("a", encoding="utf-8") as backup:
-                backup.write(text)
+                backup.write(_strip_ansi(text))
                 backup.flush()
         return written
 

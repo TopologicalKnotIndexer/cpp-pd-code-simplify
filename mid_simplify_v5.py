@@ -15,6 +15,7 @@ import json
 import multiprocessing
 import os
 import re
+import stat
 import sys
 import time
 import threading
@@ -58,6 +59,7 @@ NON_MONOTONE_HEURISTIC_PATH_BUDGET = 8
 NON_MONOTONE_MAX_GREEN_TESTS_PER_STATE = 4096
 NON_MONOTONE_MAX_TOTAL_GREEN_TESTS = 4_000_000
 UINT64_MASK = (1 << 64) - 1
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class TeeTextIO:
@@ -71,7 +73,7 @@ class TeeTextIO:
             written = self._primary.write(text)
             self._primary.flush()
             with self._log_file.open("a", encoding="utf-8") as backup:
-                backup.write(text)
+                backup.write(strip_ansi(text))
                 backup.flush()
         return written
 
@@ -127,8 +129,159 @@ def local_timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
+
+
+def stderr_target_kind() -> str:
+    try:
+        if sys.stderr.isatty():
+            return "tty"
+        mode = os.fstat(sys.stderr.fileno()).st_mode
+    except Exception:
+        return "unknown"
+    if stat.S_ISFIFO(mode):
+        if os.name == "nt":
+            try:
+                if sys.stdout.isatty():
+                    return "tty"
+            except Exception:
+                pass
+        return "pipe"
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISCHR(mode):
+        return "character"
+    if hasattr(stat, "S_ISSOCK") and stat.S_ISSOCK(mode):
+        return "pipe"
+    return "other"
+
+
+def stderr_color_enabled() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("TERM") == "dumb":
+        return False
+    if stderr_target_kind() != "tty":
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetStdHandle(-12)
+            mode = ctypes.c_uint32()
+            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+        except Exception:
+            pass
+    return True
+
+
+def ansi(code: str) -> str:
+    return f"\x1b[{code}m" if stderr_color_enabled() else ""
+
+
+def _token_has_any(token: str, needles: Sequence[str]) -> bool:
+    return any(needle in token for needle in needles)
+
+
+def _numberish(text: str) -> bool:
+    has_digit = False
+    for char in text:
+        if char.isdigit():
+            has_digit = True
+        elif char not in ".-+,":
+            return False
+    return has_digit
+
+
+def _color_value(value: str) -> str:
+    if not stderr_color_enabled() or not value:
+        return value
+    if value in {"yes", "true", "ok"}:
+        return f"{ansi('1;32')}{value}{ansi('0')}"
+    if value in {"no", "false"}:
+        return f"{ansi('2')}{value}{ansi('0')}"
+    if _numberish(value):
+        return f"{ansi('1;33')}{value}{ansi('0')}"
+    return value
+
+
+def _color_token(token: str) -> str:
+    if not stderr_color_enabled() or not token:
+        return token
+    failure_needles = (
+        "error",
+        "fail",
+        "timeout",
+        "rejected",
+        "resource_limited=true",
+        "resource_limited=yes",
+        "timed_out=true",
+        "found=no",
+        "accepted=no",
+    )
+    success_needles = (
+        "done",
+        "found=yes",
+        "accepted=yes",
+        "status=ok",
+        "stop_quit_at_crossing",
+        "matched",
+        "applied",
+    )
+    stage_needles = (
+        "start",
+        "pre_simplify",
+        "r3_prepass",
+        "search",
+        "non_monotone",
+        "brute_fallback",
+        "r3_failover",
+        "reapr",
+        "handoff",
+        "adaptive_order",
+        "progress",
+    )
+    if token == "->":
+        return f"{ansi('2')}{token}{ansi('0')}"
+    if "=" in token:
+        key, value = token.split("=", 1)
+        prefix = f"{key}="
+        if _token_has_any(token, failure_needles):
+            return f"{ansi('1;31')}{prefix}{_color_value(value)}{ansi('0')}"
+        if _token_has_any(token, success_needles):
+            return f"{ansi('1;32')}{prefix}{_color_value(value)}{ansi('0')}"
+        return f"{ansi('36')}{prefix}{ansi('0')}{_color_value(value)}"
+    if _token_has_any(token, failure_needles):
+        return f"{ansi('1;31')}{token}{ansi('0')}"
+    if _token_has_any(token, success_needles):
+        return f"{ansi('1;32')}{token}{ansi('0')}"
+    if _token_has_any(token, stage_needles):
+        return f"{ansi('1;34')}{token}{ansi('0')}"
+    if _numberish(token):
+        return f"{ansi('1;33')}{token}{ansi('0')}"
+    return token
+
+
+def colorize_log_message(message: str) -> str:
+    if not stderr_color_enabled():
+        return message
+    parts = re.split(r"(\s+)", message)
+    return "".join(part if part.isspace() else _color_token(part) for part in parts)
+
+
 def format_progress_log(message: str) -> str:
-    return f"[pdcode-simplify {local_timestamp()}] {message}"
+    if not stderr_color_enabled():
+        return f"[pdcode-simplify {local_timestamp()}] {message}"
+    return (
+        f"{ansi('2')}[{ansi('0')}"
+        f"{ansi('1;36')}pdcode-simplify{ansi('0')} "
+        f"{ansi('2;37')}{local_timestamp()}{ansi('0')}"
+        f"{ansi('2')}]{ansi('0')} "
+        f"{colorize_log_message(message)}"
+    )
 
 
 class PdCodeSimplifyTimeoutError(RuntimeError):
