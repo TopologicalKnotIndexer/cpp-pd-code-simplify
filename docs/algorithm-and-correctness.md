@@ -299,13 +299,10 @@ the Python prototype. The determinant code is isolated in the C++ namespace
 construction, the same finite-field primes, and the same acceptance order.
 
 For a one-component input, the oracle tries a deterministic projection
-candidate only when it can make the crossing count smaller. The acceptance
-policy is deliberately conservative: for a diagram with `n` crossings, a REAPR
-candidate is considered only if both the raw candidate and the candidate after
-ordinary R1/R2/nugatory cleanup still have at least
-`n - ceil(n / 4)` crossings. This prevents the oracle from accepting
-an extremely small projection just because the current invariant profile is too
-coarse to reject it.
+candidate only when it can make the crossing count smaller. There is no
+crossing-drop window: an extremely small projection can be accepted if it
+passes the invariant profile below. This makes `--reapr` more useful on hard
+diagrams, but also makes the oracle riskier than the default simplifier.
 
 - determinant `1` proposes the empty unknot projection;
 - an odd determinant `d > 1` proposes the canonical `(2,d)` torus-knot
@@ -313,8 +310,7 @@ coarse to reject it.
 
 If the first template is rejected, the oracle may continue through a bounded
 deterministic retry sequence. Each retry seed generates a closed-braid
-candidate pool inside the same conservative crossing window using the same
-pseudo-random integer stream in C++ and Python.
+candidate pool using the same pseudo-random integer stream in C++ and Python.
 The default cap is three attempts; `--reapr-retry-max N` changes that cap, and
 `0` disables REAPR candidate attempts. These retries are deterministic because
 the seed for attempt `i` is derived only from `i`, the determinant, and the
@@ -346,12 +342,10 @@ independent invariants. The project tests compare the same invariant-profile
 guard used by the REAPR acceptance check: component count, Alexander
 determinant fingerprint, and Alexander root sets modulo 11, 19, and 31. The
 tests also include a `pd_k0.txt` regression fixture
-where the determinant-preserving
-projection template is rejected by the conservative crossing window before it
-can collapse a 481-crossing diagram to an extremely small projection. The
-current retry pool is still not strong enough to simplify that fixture under
-the strict guard; it leaves the diagram unchanged rather than accepting an
-unsafe candidate.
+where `--reapr` is expected to accept a determinant-profile-compatible
+projection template and collapse the 481-crossing diagram to a much smaller
+PD code. This regression intentionally exercises the experimental, non-proof
+part of the project.
 
 ## Component Accounting
 

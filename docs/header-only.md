@@ -90,9 +90,8 @@ options.progress = [](const std::string& message) {
 
 Set `options.enable_reapr = true` only when you want the experimental
 invariant-guarded projection oracle. This option can change the knot or link
-type. REAPR acceptance is conservative: for `n` current crossings, both the raw
-candidate and its R1/R2/nugatory cleanup must keep at least
-`n - ceil(n / 4)` crossings. Accepted output sets
+type. There is no crossing-drop window, so a very small projection may be
+accepted when the invariant profile matches. Accepted output sets
 `result.reapr_warning` and reports `result.reapr_invariants_before` and
 `result.reapr_invariants_after` for independent checking. Set
 `options.reapr_retry_max` to control the deterministic retry cap; the default

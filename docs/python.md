@@ -64,20 +64,19 @@ lexicographically.
 Use `--show-step-pd` to print `step_pd_code[ROUND]: PD[...]` to stdout after
 each mid-simplification witness is applied and canonicalized, before that
 round's automatic local cleanup. With `--reapr`, every REAPR candidate that
-passes the full invariant profile and conservative crossing window is also
-printed with round `0` before the selected candidate's ordinary local cleanup.
+passes the full invariant profile is also printed with round `0` before the
+selected candidate's ordinary local cleanup.
 This diagnostic output is disabled by default because it can be large and
 shares stdout with JSON/text results.
 Use `--reapr` to enable the same experimental invariant-guarded projection
 oracle as the C++ implementation. It checks component count, Alexander
 determinant, and Alexander roots over `F_11`, `F_19`, and `F_31` before
-accepting a candidate. The oracle is conservative: for `n`
-current crossings, the raw candidate and its R1/R2/nugatory cleanup must both
-keep at least `n - ceil(n / 4)` crossings, and accepted candidates
-return to the normal iterative simplification loop. It is disabled by default
-and can still change the knot or link type; output includes `reapr_warning`
-when the oracle is used. Use `--reapr-retry-max N` to cap the deterministic
-retry sequence; the default is `3`, and `0` disables REAPR candidate attempts.
+accepting a candidate. There is no crossing-drop window: a very small
+projection may be accepted when the profile matches. Accepted candidates return
+to the normal iterative simplification loop. It is disabled by default and can
+still change the knot or link type; output includes `reapr_warning` when the
+oracle is used. Use `--reapr-retry-max N` to cap the deterministic retry
+sequence; the default is `3`, and `0` disables REAPR candidate attempts.
 Use `--log-file FILEPATH` to tee stdout and stderr into a flushed backup log
 file while keeping the normal terminal output unchanged.
 

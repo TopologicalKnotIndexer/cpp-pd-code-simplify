@@ -414,7 +414,7 @@ void test_step_pd_callback() {
             "step callback should receive a canonical PD code after witness application");
 }
 
-void test_reapr_pd_k0_fixture_rejects_unsafe_projection() {
+void test_reapr_pd_k0_fixture_reaches_invariant_guard_after_drop_window_removed() {
     const auto code = pdcode_simplify::parse_pd_code(
         read_text_file("tests/fixtures/pd_k0.txt"));
     require(code.size() == 481,
@@ -427,13 +427,13 @@ void test_reapr_pd_k0_fixture_rejects_unsafe_projection() {
     const auto reduced = pdcode_simplify::reduce_pd_code(code, 0, options, 0);
 
     require(!reduced.reapr_used,
-            "conservative REAPR guards should not accept the unsafe pd_k0 projection template");
+            "pd_k0 projection template should still be rejected when full invariant guards differ");
     require(reduced.reapr_attempts == 1,
-            "conservative REAPR test should only exercise the projection template");
+            "REAPR test should only exercise the deterministic projection template");
     require(reduced.reapr_rejected,
-            "conservative REAPR guards should report the unsafe pd_k0 candidate as rejected");
-    require(reduced.reapr_status == "rejected_overaggressive_projection",
-            "conservative REAPR guards should reject pd_k0 because the drop is too large");
+            "pd_k0 projection template should be marked as rejected by invariant guards");
+    require(reduced.reapr_status == "rejected_invariant_changed",
+            "pd_k0 should now reach the invariant guard after removing the crossing-drop guard");
     require(reduced.code.size() == code.size(),
             "rejected REAPR candidates should keep the current best PD code");
     require(!reduced.alexander_determinant_before.empty(),
@@ -513,7 +513,7 @@ int main() {
         test_canonicalize_after_each_reduction();
         test_do_check_cycle_respects_timeout();
         test_step_pd_callback();
-        test_reapr_pd_k0_fixture_rejects_unsafe_projection();
+        test_reapr_pd_k0_fixture_reaches_invariant_guard_after_drop_window_removed();
         test_optional_pd_k14_legacy_heuristic_regression();
         std::cout << "All tests passed\n";
         return EXIT_SUCCESS;

@@ -161,10 +161,9 @@ selected for that phase.
 experimental deterministic reembedding/projection oracle after the default
 R1/R2/nugatory preprocessing and before the mid-simplification search. The
 oracle accepts a candidate only when it has fewer crossings and the internal
-invariant profile is unchanged. It also uses a conservative step window: for
-`n` current crossings, the raw candidate and its R1/R2/nugatory cleanup must
-both keep at least `n - ceil(n / 4)` crossings. Accepted candidates
-return to the normal iterative simplification loop. The profile includes total
+invariant profile is unchanged. It does not impose a crossing-drop window, so a
+very small projection may be accepted when the profile matches. Accepted
+candidates return to the normal iterative simplification loop. The profile includes total
 component count, Alexander determinant, and Alexander roots over `F_11`,
 `F_19`, and `F_31`. This guard is stricter than determinant
 alone, but it is not a proof that the output is the same knot or link. Output
@@ -190,8 +189,8 @@ later rounds might simplify further. Output includes
 `--show-step-pd` prints `step_pd_code[ROUND]: PD[...]` immediately after each
 mid-simplification witness is applied and canonicalized, before the automatic
 local cleanup for that round. When `--reapr` is enabled, every REAPR candidate
-that passes the full invariant profile and conservative crossing window is also
-printed with round `0` before the selected candidate's ordinary local cleanup.
+that passes the full invariant profile is also printed with round `0` before
+the selected candidate's ordinary local cleanup.
 In batch mode the line is prefixed with the input label. This diagnostic output
 uses stdout and is therefore intentionally off by default, especially when
 `--json` output will be parsed by another program.
