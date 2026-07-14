@@ -110,7 +110,7 @@ If you use this project, please cite it as:
 
 ```bibtex
 @misc{cpp_pd_code_simplify_2026,
-  author = {{GGN-2015}},
+  author = {{GGN\_2015}},
   title = {{cpp-pd-code-simplify}: A C++ Port of a PD-Code Mid-Simplification Algorithm},
   year = {2026},
   url = {https://github.com/TopologicalKnotIndexer/cpp-pd-code-simplify},
