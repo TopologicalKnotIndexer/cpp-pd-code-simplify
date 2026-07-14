@@ -113,7 +113,7 @@ If you use this project, please cite it as:
   author = {{GGN-2015}},
   title = {{cpp-pd-code-simplify}: A C++ Port of a PD-Code Mid-Simplification Algorithm},
   year = {2026},
-  url = {https://github.com/GGN-2015/cpp-pd-code-simplify},
+  url = {https://github.com/TopologicalKnotIndexer/cpp-pd-code-simplify},
   note = {The underlying algorithm and original Python prototype were implemented by zzhouhe.}
 }
 ```

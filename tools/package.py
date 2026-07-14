@@ -217,7 +217,23 @@ def run_tests(args: argparse.Namespace) -> None:
         elif host_platform() == "macos":
             env["DYLD_LIBRARY_PATH"] = str(compiler.parent) + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
     run([str(test_app)], env=env)
-    run([sys.executable, "tools/test_cpp_output_diagram_sanity.py"], env=env)
+    diagram_probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import importlib.util; raise SystemExit(importlib.util.find_spec('pd_code_to_diagram') is None)",
+        ],
+        cwd=str(ROOT),
+        env=env,
+        check=False,
+    )
+    if diagram_probe.returncode == 0:
+        run([sys.executable, "tools/test_cpp_output_diagram_sanity.py"], env=env)
+    else:
+        print(
+            "skip: optional diagram sanity test requires the pd_code_to_diagram development package",
+            flush=True,
+        )
     run(
         [
             sys.executable,

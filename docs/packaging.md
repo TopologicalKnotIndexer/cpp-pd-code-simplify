@@ -30,6 +30,12 @@ Build and run the C++ unit tests:
 python tools/package.py test
 ```
 
+This always runs the C++ unit suite and randomized invariant-profile checks.
+If the optional `pd_code_to_diagram` development package is importable, it also
+renders representative C++ outputs and checks their diagram round trips;
+otherwise that integration check is reported as skipped instead of making a
+fresh self-contained checkout fail.
+
 Build a redistributable directory:
 
 ```sh
